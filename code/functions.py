@@ -1,9 +1,4 @@
-''' Usage: This code contains functions used in national-canal-cooling.py and will not produce results if run in isolation.
-    Not all functions are utilised but are included here for posterity e.g.,  
-    > return_buildings() superseeded by return_buildings_polygon() in auxiliary.py
-    > filter_buildings() superseeded by subset_buildings()
-    > return_shading() superseeded by teturn_shading() in auxiliary.py
-    > determine_shading() superseeded by determine_shading_proportion()'''
+''' Usage: This code contains functions used in national-canal-cooling.py and will not produce results if run in isolation. '''
 
 # Force use of Shapely 2.0
 from os import environ
@@ -11,395 +6,26 @@ environ['USE_PYGEOS'] = '0'
 
 # Required packages
 import warnings
-import requests
-import pybdshadow
-from pyproj import Geod
-from json import loads, load
-from pandas import to_datetime
+from json import load
 from datetime import timedelta
-from suncalc import get_position
-from geoalchemy2 import Geometry
+from pandas import to_datetime
+from numpy import savetxt, array
 from datetime import datetime as dt
-from pysolar.solar import get_altitude
-from sqlalchemy import create_engine, text
-from numpy import savetxt, array, linspace
-from geopandas import GeoDataFrame, GeoSeries
-from matplotlib.pyplot import subplots, savefig, title
-from shapely.geometry import Point, Polygon, LineString
-from math import radians, cos, degrees, sqrt, sin, exp, log
+from pysolar.solar import get_altitude, radiation
+from math import radians, cos, sqrt, sin, exp, log
 
 # Import user-defined parameters
-import config
 from params import * 
-
-#---- Key variables ----#
-
-# PostGIS password
-PW = config.info['postgis']
-
-# String for connection
-DB_STRING = f"postgresql://postgres:{PW}@localhost:5432/canals"
-
-# API key
-MT_API = config.info['api_mt']
-JH_API = config.info['api_jh']
-
-# Sets ellipsoid model
-g_model = Geod(ellps="WGS84")
 
 # Prevent geopandas CRS warning for pybdshadow (Context: https://github.com/geopandas/geopandas/issues/2606)
 # shadows = pybdshadow.bdshadow_sunlight(building_data_projected, date)
 warnings.filterwarnings("ignore", message="CRS not set for some of the concatenation inputs")
 
-#---- Geospatial Functions (buildings, shading, climate data) ----#
+#------------------------- Reference modelling -------------------------#
 
-def return_buildings(longitude, latitude, distance, plot):
-    '''
-    > Returns buildings (stored in postGIS) within a specified {distance} from a location {longitude, latitude}
-    '''
-
-    # Create the engine
-    db_connection = create_engine(DB_STRING) 
-
-    # Convert to GeoSeries and project
-    point_geometry_geographic = GeoSeries(Point(longitude, latitude), crs = 4326)
-    point_geometry_projected = point_geometry_geographic.to_crs(27700)
-
-    query = text("select * from buildings where ST_DWithin(buildings.geometry, ST_SetSRID(ST_MakePoint(:e, :n), 27700), :d)") \
-    .bindparams(n = point_geometry_projected.iloc[0].y, # Northing
-                e = point_geometry_projected.iloc[0].x, # Easting
-                d = distance) # Threshold distance
-
-    # Extracts geometries using from_postgis, stores as geodataframe
-    buildings_via_python = GeoDataFrame.from_postgis(sql = query, 
-    con = db_connection,
-    geom_col='geometry', # Column name for the geometry
-    index_col='os_topo_toid', # Column name for the unique ID
-    coerce_float=True)
-
-    # Remove date-time field
-    buildings_via_python = buildings_via_python.drop(columns='bha_processdate')
-
-    # Plot the output
-    if plot == True:
-
-        # Set up output image
-        fig, my_ax = subplots(1, 1, figsize=(16, 10))
-        title(f"Buildings-water point test for {round(latitude, 4), round(longitude, 4)}")
-
-        # Plot the building geometries (spatial query)
-        buildings_via_python.plot(
-            ax = my_ax,
-            color = "#343434",
-            edgecolor = '#343434',
-            linewidth = 0.5,
-            )
-
-        # Add north arrow
-        x, y, arrow_length = 0.97, 0.99, 0.1
-        my_ax.annotate('N', xy=(x, y), xytext=(x, y-arrow_length),
-            arrowprops=dict(facecolor='black', width=5, headwidth=15),
-            ha='center', va='center', fontsize=20, xycoords=my_ax.transAxes)
-
-        # Save the result
-        savefig(f'./images/buildings-at-{round(latitude, 4)}_{round(longitude, 4)}.png', bbox_inches='tight')
-
-    # Return geometries of buildings
-    return buildings_via_python
-
-def filter_buildings(date, building_data, longitude, latitude, polygon, tolerance, distance, interval):
-    '''
-    > A new function to improve efficiency
-    > return_buildings() returns all buildings within a specified distance (m) of a location
-    > Building geometries are then used to calculate shading using return_shading() but this could be more efficient
-    > However, only a small number of those buildings could shade the studied location given the sun's azimuth (direction)
-    > This function returns those buildings based on:
-        - date, latitude, longitude = for calculating the solar azimuth 
-        - tolerance (°) = threshold (±) for determining whether buildings are in the current solar direction
-    > get_position()['azimuth'] returns:
-        - solar azimuth in radians, measured relative to south (east = negative, west = positive)
-        - This is converted to the more conventional direction
-        - These results are consistent with https://www.sunearthtools.com/dp/tools/pos_sun.php
-    > Rather that checking the azmiuth for each building centroid or coordinate sequence...
-    > We simply generate the desired area, and then perform an intersects
-    '''
-
-    # Returns the solar azimuth in radians
-    solar_azimuth = get_position(date, longitude, latitude)['azimuth']
-
-    # Convert azmiuth from relative to south to relative to north (degrees)
-    if solar_azimuth < 0: 
-        solar_azimuth = degrees(radians(180) - abs(solar_azimuth))
-    else:
-        solar_azimuth = degrees(radians(180) + abs(solar_azimuth))
-
-    # Line-based analysis
-    if polygon == False:
-
-        # Coordiantes of shape, based on azimuth ± tolerance, and specified distance and interval
-        forward_long, forward_lat = g_model.fwd([longitude]*2,
-                                        [latitude]*2, 
-                                        az = [solar_azimuth]*2,
-                                        dist = [distance, 0], 
-                                        radians = False)[0:2]
-        
-        forward_linestring = GeoDataFrame(index=[0], crs = 'epsg:4326', geometry = [LineString(zip(forward_long, forward_lat))])\
-        .to_crs(building_data.crs)
-        
-        # Search for buildings using intersects
-        filtered_buildings = building_data[building_data.intersects(forward_linestring.geometry.iloc[0])]
-
-        # Return filtered buildings (potential shading)
-        return filtered_buildings, forward_linestring
-    
-    # Polygon-based analysis
-    else: 
-
-        # Generate sequence of azimuths and convert to list
-        azimuths = linspace(start = solar_azimuth - tolerance, 
-                            stop = solar_azimuth + tolerance,
-                            num = interval, 
-                            endpoint = True).tolist()
-
-        # Sequence of distances
-        distances = [distance] * interval
-
-        # Insert (in place) zero at the start of each list, representing the origin location
-        azimuths.insert(0,0)
-        distances.insert(0,0)
-
-        # Coordiantes of shape, based on azimuth ± tolerance, and specified distance and interval
-        forward_long, forward_lat = g_model.fwd([longitude] * (interval + 1),
-                                        [latitude] * (interval + 1), 
-                                        az = azimuths,
-                                        dist = distances, 
-                                        radians = False)[0:2]
-        
-
-        # Creates polygon from coordinates, converts to GDF, reprojects to BNG
-        forward_polygon = GeoDataFrame(index=[0], crs = 'epsg:4326', geometry = [Polygon(zip(forward_long, forward_lat))])\
-            .to_crs(building_data.crs)
-
-        # Search for buildings using intersects
-        filtered_buildings = building_data[building_data.intersects(forward_polygon.geometry.iloc[0])]
-    
-    # Return filtered buildings (potential shading)
-    return filtered_buildings, forward_polygon
-
-def return_shading(date, filtered_buildings, extracted_buildings, longitude, latitude, forward_shape, plot):
-    '''
-    > This function returns the shading geometry from buildings, for a specified datetime (UTC)
-    > Utilises 'pybdshadow': https://pybdshadow.readthedocs.io/en/latest/
-    > Results verified against: https://shadowmap.org/
-    > Building geometries (OS) obtained via return_buildings()
-    '''
-
-    # Return the solar altitude, converted to degrees
-    solar_position = degrees(get_position(date, longitude, latitude)['altitude'])
-
-    # If the sun is above the horizon
-    if solar_position < 0:
-
-            return None, solar_position
-    
-    # The sun is above the horizon, but there are no buildings in the solar direction
-    if filtered_buildings.empty:
-
-            return None, solar_position
-       
-    # The sun is above the horizon AND there are buildings that could shade the location
-    else: 
-        
-        # Keep unique ID, building height, and geometry
-        building_data = filtered_buildings[['relhmax', 'geometry']]
-
-        # Rename column to work with pybdshadow
-        building_data = building_data.copy().rename(columns={'relhmax': 'height'})
-
-        # Project to geographic coordinates
-        building_data_projected = building_data.to_crs('epsg:4326')
-
-        # This part is slow and results in the following warning:
-
-            # > UserWarning: CRS not set for some of the concatenation inputs. \
-            # > Setting output's CRS as WGS 84 (the single non-null crs provided)."
-
-        # Preprocessing (remove empty polygons, multipolygons > polygons, generate building_id)
-        #building_data_projected = pybdshadow.bd_preprocess(building_data_projected)
-
-        # Explode multi-part geometries into multiple single geometries.
-        building_data_projected = building_data_projected.explode(index_parts = False)
-
-        # Add 'building_id' column
-        building_data_projected['building_id'] = range(1, len(building_data_projected) + 1)
-
-        # Calculate building shadows
-        shadows = pybdshadow.bdshadow_sunlight(building_data_projected, date)
-
-        # Assigns a CRS to the output (4326)
-        shadows.crs = building_data_projected.crs
-
-        # Reproject to British National Grid
-        shadows = shadows.to_crs(building_data.crs)
-
-        # Plotting
-        if plot == True:
-
-            # Creates Point from coordinates, converts to GDF, reprojects to BNG
-            studied_location = GeoDataFrame(index=[0], crs = 'epsg:4326', geometry = [Point(longitude, latitude)])\
-            .to_crs(building_data.crs)
-
-            # Set up output image
-            fig, my_ax = subplots(1, 1, figsize=(16, 10))
-            title(f"Buildings-shadow test at (UTC) {date}")
-
-            # Plot the building geometries (spatial query)
-            shadows.plot(
-                ax = my_ax,
-                color = "#959595",
-                edgecolor = None,
-                linewidth = 0.5,
-                )
-            
-            # Plot the extracted building geometries
-            extracted_buildings.plot(
-                ax = my_ax,
-                color = "#FFFFFF",
-                edgecolor = "#1189FF",
-                linewidth = 0.5,
-                )
-
-            # Plot the filtered building geometries
-            building_data.plot(
-                ax = my_ax,
-                color = "#1189FF",
-                edgecolor = None,
-                linewidth = 0.5,
-                )
-            
-            # Plot the solar azimuth line
-            forward_shape.plot(
-                ax = my_ax,
-                color = "#EA2F2F",
-                edgecolor = None,
-                linewidth = 0.5,
-                )
-
-            # Plot the studied location
-            studied_location.plot(
-                ax = my_ax,
-                color = "#EA2F2F",
-                edgecolor = None,
-                linewidth = 0.5,
-                )
-
-            # Add north arrow
-            x, y, arrow_length = 0.97, 0.99, 0.1
-            my_ax.annotate('N', xy=(x, y), xytext=(x, y-arrow_length),
-                arrowprops=dict(facecolor='black', width=5, headwidth=15),
-                ha='center', va='center', fontsize=20, xycoords=my_ax.transAxes)
-
-            # Save the result
-            savefig(f'./images/shadows-at-{date.date().strftime("%m_%d")}-{date.time().strftime("%H_%M_%S")}.png', bbox_inches='tight')
-    
-        # Return output
-        return shadows, solar_position
-
-def determine_shading(shaded_area, longitude, latitude):
-    '''
-    > This function determines if the studied location is shaded (True) or not (False) for a specified datetime
-    '''
-
-    # If there is a shaded area (store as gdf)
-    if isinstance(shaded_area, GeoDataFrame):
-
-        # Creates Point from coordinates, converts to GDF, reprojects to BNG
-        studied_location = GeoDataFrame(index=[0], crs = 'epsg:4326', geometry = [Point(longitude, latitude)])\
-            .to_crs(shaded_area.crs)
-
-        # Check for intersect between shaded area and current location
-        if any(shaded_area.intersects(studied_location.geometry.iloc[0])):
-        
-            return True # There is a shaded area and it intersects with the studied location
-        
-        else: 
-
-            return False # There is a shaded area but it does not intersect with the studied location
-
-    else:
-
-        return False # There is no shaded area (sun altitude below horizon)
-    
-# Obtain climate data from OpenWeatherMap
-def get_climate_data(start_datetime, longitude, latitude, API):
-    '''
-    > This function returns climate data from OpenWeatherMap for a specified datetime (UTC) and location
-    > To minimise the number of API calls, the function first checks a postGIS database
-    > If the data is absent, the API is used and the dataset is then uploaded to postGIS
-    > Function not used, as weather data were bulk downloaded from OpenWeather
-    '''
-
-    # First, check for climate data in the postGIS table, establish the connection
-    db_connection = create_engine(DB_STRING)
-
-    # Format query, using latitude, longitude and datetime as inputs
-    query = text("select * from climate_data where latitude = :a and longitude = :b and datetime = :d") \
-    .bindparams(a = latitude, b = longitude, d = start_datetime)
-
-    # Extracts climate data, stores as geodataframe
-    weather_gdf = GeoDataFrame.from_postgis(sql = query, 
-    con = db_connection,
-    geom_col='geometry', # Column name for the geometry
-    coerce_float=True)
-
-    # If there is no data, pull the data from the OpenWeatherAPI and add to postGIS
-    if weather_gdf.empty: 
-
-        # Sets end datatime (+1 hr)
-        end_datetime = start_datetime + timedelta(hours=1)
-    
-        # Converts dates to Unix timestamp
-        start_time = start_datetime.timestamp()
-        end_time= end_datetime.timestamp()
-
-        # API call to Open Weather (formatting for readability)
-        response = requests.get(f"http://history.openweathermap.org/data/2.5/history/city?&" \
-                                f"lat={latitude}&" \
-                                f"lon={longitude}&" \
-                                f"type=hour&" \
-                                f"start={start_time}&" \
-                                f"end={end_time}&" \
-                                f"appid={API}")
-        
-        # Loads as json
-        weather = loads(response.text)
-
-        # Creating a geodataframe from input latitude and longitude, including those as df columns
-        weather_gdf = GeoDataFrame({'latitude': latitude, 'longitude' : longitude, 
-            'datetime' : start_datetime,
-            'air_temperature' : weather['list'][0]['main']['temp'], 
-            'humidity' : weather['list'][0]['main']['humidity'], 
-            'cloud_cover' : weather['list'][0]['clouds']['all'], 
-            'wind_speed' : weather['list'][0]['wind']['speed'],
-            'air_pressure' : weather['list'][0]['main']['pressure'],
-            'geometry': [Point(longitude, latitude)]}, crs="epsg:4326").to_crs(27700)
-        
-        # Add location to table
-        weather_gdf.to_postgis('climate_data', db_connection, if_exists='append', dtype={'geom': Geometry('[Point]', srid=27700)})
-        
-        # Return statement
-        return(weather_gdf)
-
-    # The data was previously stored on postGIS
-    else:
-
-        # Return gdf
-        return weather_gdf
-
-#---- Concrete modelling ----#
 def solar_intensity(date, longitude, latitude):
     '''
-    > This function returns the intensity of the sun based on its azimuth angle (W/m^2) for a specific location and datetime
+    > This function returns the intensity of the sun (W/m^2) based on its azimuth angle for a specific location and datetime
     > It also returns the solar altitude angle (°), which is used in solar_absorptivity()
     > It replaces the following functions from the original code:
         - sun_intensity(), sun_altitude_d(), sun_altitude_r(), HRA(), sun_azimuth_r(), sun_azimuth_d()
@@ -407,86 +33,95 @@ def solar_intensity(date, longitude, latitude):
     > get_position() returns:
         - Sun altitude in radians 
         - Sun azimuth in radians, measured relative to south (east = negative, west = positive)
-    > Utilises the following parameter:
-        - Overhead sun intensity (OSI) = 476 W/m^2
     '''
-    # Return the solar altitude using Pysolar (2023-06-27)
+    # Return the solar altitude using Pysolar
     solar_altitude = get_altitude(latitude, longitude, date)
 
-    # Intensity of the sun based on angle (W/m^2) 
-    intensity = OSI * cos(radians(90 - solar_altitude)) # 90 - solar altitude = solar zenith
+    # Clear sky irradiance on a surface perpendicular to sun (DNI; W/m^2), based on PySolar documentation (https://pysolar.readthedocs.io/en/latest/)
+    irradiance = radiation.get_radiation_direct(date, solar_altitude)
+
+    # Adjust for Global Horizontal Irradiance (GHI)
+    irradiance_horizontal = irradiance * cos(radians(90 - solar_altitude))
 
     # Return outputs
-    return intensity, solar_altitude
+    return irradiance_horizontal, solar_altitude
 
-def model_concrete_temperature(air_temperature, relative_humidity, cloud_height, cloud_cover, wind_speed,
-                               concrete_temp, interval_datetime, longitude, latitude,
+def model_reference_temperature(air_temperature, relative_humidity, cloud_height, cloud_cover, wind_speed, air_pressure, 
+                               reference_temp, interval_datetime, longitude, latitude,
                                shading_proportion, canal_area):
     '''
     > A nested function to simplify the code structure
-    > Takes an input concrete temperature (K) and models a new concrete temperature after 15 minutes 
+    > Takes an input reference temperature (K) and models a new reference temperature after 15 minutes using:
             - Air temperature (K)
             - Humidity (%)
             - Cloud height and cover (fractional)
             - Wind speed (m/s)
             - Shading proportion [0-1]
     > The following parameters are used:
-        - Concrete absorbivity (C_ABSORBIVITY) = 0.85 
-    > Nested functions are described in full below
+        - Reference emissivity (R_EMISSIVITY) = 1 - albedo 
     > Similiar in scope to ConcreteNewTemp() from the original code, but individual functions are outlined more fully here
-    > All sub-functions checked on 2023-06-28. Results are identical to the spreadsheet approach (when the same inputs are utilised)
     '''
 
-    # Model the incoming solar radiation (W/m)
-    csr = concrete_solar_radiation(interval_datetime, longitude, latitude, shading_proportion, canal_area)
+    # Model the incoming solar (shortwave) radiation (W, J/s), incorporating cloud cover
+    csr = reference_solar_radiation(interval_datetime, longitude, latitude, shading_proportion, canal_area, cloud_cover)
     
-    # Modify starting concrete temperature (K) based on radiation input
-    concrete_temp = concrete_after_sunlight(csr, concrete_temp, canal_area)
+    # Modify starting reference temperature (K) based on radiation input
+    reference_temp = reference_after_sunlight(csr, reference_temp, canal_area)
 
-    # Calculate concrete emissions (W/m)
-    emissions = concrete_emissions(concrete_temp, canal_area)
+    # Calculate reference emissions (W, J/s) based on surface concrete temperature
+    emissions = reference_emissions(reference_temp, canal_area)
     
-    # Thermal absorption (W/m2)
+    # Thermal absorption (longwave) from sky (W, J/s)
     thermal_abs = thermal_absorption(air_temperature, relative_humidity, cloud_height, cloud_cover, canal_area) 
 
-    # Concrete absorption (W/m2)
-    concrete_absorbed = thermal_abs * C_ABSORBIVITY
+    # Reference material absorption (W, J/s)
+    reference_absorbed = thermal_abs * R_EMISSIVITY
     
-    # Determine net radiation
-    net_radiation =  emissions - concrete_absorbed
+    # Net radiation (W, J/s) = total emissions based on surface temperature minus total thermal absorption from sky
+    net_radiation =  emissions - reference_absorbed 
 
-    # Calculate energy transfer to air
-    energy_to_air = concrete_convection_air(concrete_temp,
+    # Calculate energy transfer to air (W, J/s)
+    energy_to_air = reference_convection_air(reference_temp,
                                             air_temperature, 
-                                            wind_speed)
+                                            wind_speed, 
+                                            canal_area, 
+                                            air_pressure)
+    
+    # Determine heat transfer to layer above (W, J/s)
+    heat_transfer = reference_heat_transfer(reference_temp, net_radiation, energy_to_air, canal_area)
 
-    # Determine heat Transfer to layer above (W/m) 
-    heat_transfer = concrete_heat_transfer(concrete_temp, net_radiation, energy_to_air, canal_area)
-
-    # Total energy change (J/m)
-    total_energy_change = concrete_energy_change(heat_transfer)
+    # Total energy change (W), converting from J/s to 15-minute model intervals
+    total_energy_change = reference_energy_change(heat_transfer)
 
     # Corresponding temperature change (K)
-    modelled_temperature_change = concrete_temperature_change(total_energy_change, canal_area)
+    modelled_temperature_change = reference_temperature_change(total_energy_change, canal_area)
 
-    # Final concrete temperature for model run, overwriting earlier list
-    concrete_temp = [x + y for x, y in zip(concrete_temp, modelled_temperature_change)]
+    # Final reference temperature for model run, overwriting earlier list
+    reference_temp = [x + y for x, y in zip(reference_temp, modelled_temperature_change)]
 
-    # Created dictionary to return other important values, used for modelling air temperature change
-    concrete_energy_values = {'net_radiation' : net_radiation,
-                   'energy_to_air' : energy_to_air, 
-                   'solar_radiation' : csr}
+    # Created dictionary to return variables used for modelling air temperature change
+    # Variables measured in W (J/s), accounting for canal area (m/2), multipled by MODEL_INTERVAL (total energy transferred over 15m)
+    reference_energy_values = {'net_radiation' : net_radiation * MODEL_INTERVAL,
+                   'energy_to_air' : energy_to_air * MODEL_INTERVAL}
 
     # Return output
-    return concrete_temp, concrete_energy_values
+    return reference_temp, reference_energy_values
 
-def concrete_solar_radiation(date, longitude, latitude, shading_proportion, canal_area):
+def cloud_cover_effect(cloud_cover):
     '''
-    > Calculates solar radiation for concrete (W/m)
-    > Similar to ConcreteSolarRadiation() from original code
-    - Canal width and length are excluded
+    > Function to calculate a constant that represents the fraction of solar radiation that is blocked or diffused by clouds, following Nevins and Apell (2021)
+    > Solar irradiance was minimally impacted up to ≈50% cloud cover but decreased by ≈67% at 100% cloud cover.
+    > Approximated using a quadratic fit of y = 1 − 0.00243x − (4.24 × 10−5)x^2
+    > y is the fraction of clear sky irradiance expected and x is the percentage of cloud cover in the sky
+    '''
+    return 1 - (0.00243 * (cloud_cover*100)) - (4.24 * 10**-5) * ((cloud_cover*100)**2)
+
+def reference_solar_radiation(date, longitude, latitude, shading_proportion, canal_area, cloud_cover):
+    '''
+    > Calculates solar radiation for reference material (W/m)
+    > Similar to ConcreteSolarRadiation() from original code, renamed from concrete_solar_radiation()
     > Utilises the following parameters:
-        - Concrete absorbivity (C_ABSORBIVITY) = 0.85 
+        - Reference material absorbivity (R_ABSORBIVITY) = 1 - albedo
         - Relative light intensity from the shade (SHADE) = 0.2
     '''
 
@@ -494,14 +129,14 @@ def concrete_solar_radiation(date, longitude, latitude, shading_proportion, cana
     shaded_area = canal_area * shading_proportion
     unshaded_area = canal_area * (1 - shading_proportion)
 
-    # Calculate solar intensity
-    intensity = solar_intensity(date, longitude, latitude)[0]
+    # Calculate solar intensity, incorporating cloud_cover
+    intensity = solar_intensity(date, longitude, latitude)[0] * cloud_cover_effect(cloud_cover) 
 
     # If positive
     if intensity > 0: 
 
         # Calculate solar radiation (AN4)
-        solar_rad = (unshaded_area + shaded_area * SHADE) * intensity * C_ABSORBIVITY
+        solar_rad = (unshaded_area + shaded_area * SHADE) * intensity * R_ABSORBIVITY 
 
     # Set to null, if intensity is negative:
     else:
@@ -510,40 +145,36 @@ def concrete_solar_radiation(date, longitude, latitude, shading_proportion, cana
     # Return output
     return solar_rad
 
-def concrete_after_sunlight(c_solar_radiation, concrete_temp, canal_area):
+def reference_after_sunlight(ref_solar_radiation, reference_temp, canal_area):
     '''
-    > Calculates new concrete temperature based on sunlight (°C)
+    > Calculates new reference temperature based on sunlight (°C)
     > Similiar to ConcreteAfterSunlight() from original code
-        - However, produces values as /h, rather than /15m (* 3600 / 4)
-        - Canal width and length are also excluded
-    > Takes in the initial concrete temperatures (K)
     > Utilises the following parameters:
-        - Concrete depth (C_DEPTH) = 0.05 m
-        - Concrete density (C_DENSITY) = 2238 kg/m^3
-        - Concrete specific heat capacity (C_CAPACITY) = 921 J/kg K
+        - Reference depth (R_DEPTH) = 0.05 m
+        - Reference density (R_DENSITY)
+        - Reference specific heat capacity (R_CAPACITY)
     '''  
 
-    # Update the surface concrete temperature (index = 0)
-    concrete_temp[0] = ((c_solar_radiation * (3600/4)) / (C_CAPACITY * (canal_area * C_DEPTH * C_DENSITY))) + concrete_temp[0] # Surface temperature   
+    # Update the surface reference temperature (index = 0)
+    reference_temp[0] = ((ref_solar_radiation * MODEL_INTERVAL) / (R_CAPACITY * (canal_area * R_DEPTH * R_DENSITY))) + reference_temp[0] 
 
     # Return list
-    return concrete_temp
+    return reference_temp
 
-def concrete_emissions(concrete_temp, canal_area):
+def reference_emissions(reference_temp, canal_area):
     '''
-    > Calculates concrete thermal radiation (W/m)
-    > Similiar to ConcreteEmissions() from original code
-    - Canal width and length are included (area)
+    > Calculates reference material thermal emissions (W/m)
+    > Similiar to ConcreteEmissions() from original code, renamed from concrete_emissions()
     > Utilises the following parameters:
-        - Concrete emissivity (C_EMISSIVITY) = 0.85
+        - Reference emissivity (R_EMISSIVITY) = 1 - albedo
         - Stefan-Boltzmann Constant (SB) = 5.67*10**(-8)
     ''' 
-    # Modification of surface concrete temperature (K)     
-    return(canal_area * C_EMISSIVITY * SB * concrete_temp[0]**4)
+    # Modification of surface reference temperature (K)     
+    return(canal_area * R_EMISSIVITY * SB * reference_temp[0]**4)
 
 def thermal_absorption(temperature, relative_humidity, cloud_height, cloud_cover, canal_area):
     '''
-    > Calculates thermal absorption from sky
+    > Calculates thermal absorption (longwave) from sky
     > Similiar to ThermalAbsorption() from original code
     - Canal width and length are excluded
     > Utilises:
@@ -551,110 +182,118 @@ def thermal_absorption(temperature, relative_humidity, cloud_height, cloud_cover
         - Relative humidity (%)
         - Cloud cover (fractional)
         - Cloud height (fractional)
+    > Source: Goforth et al. (2002) https://doi.org/10.1117/12.459570 
     '''   
 
-	# Return output (W/m^2) 
+	# Return output (W/m)
     return ((1 + cloud_height * cloud_cover**2) * 8.78 * (10**-13) * (temperature**5.852) * (relative_humidity**0.07195)) * canal_area
 
-def concrete_convection_air(concrete_temp, air_temperature, wind_speed):
+def reference_convection_air(reference_temp, air_temperature, wind_speed, canal_area, air_pressure):
     '''
-    > Calculates convection to air (W/m)
-    > Similiar to ConcreteEnergytoAir() from original code
-    - Canal width and length are excluded
-    > Wind speed (m/s)
-
+    > Calculates reference convection to air (W/m)
+    > This approach is suitable for a solid surface (e.g., asphalt or concrete) under forced convection, but an alternative approach is needed for liquid surfaces
+    > Similiar to ConcreteEnergytoAir() from original code, renamed from concrete_convection_air()
+    > Utilises the following parameters:
+        - Specific heat capacity of the air (A_CAPACITY)
+        - Specific gas constant for dry air (A_R_SPECIFIC)
+        - Conductivity of air (A_CONDUCTIVITY)
+    > Some related papers:
+        - Lee et al. (2009): https://doi.org/10.1016/j.cemconcomp.2008.09.009
+        - Yang et al. (2024): https://doi.org/10.1038/s41598-024-64568-6
+        - Nguyen et al. (2024): https://doi.org/10.1016/j.tsep.2024.102510
     '''
-    # Maths!
-    h = 0.664 * 0.025 * (0.713**0.3) * ((15 * (10**(-6)))**(-0.5)) * (wind_speed**0.5)
 
-    # More maths (using surface and concrete temperature)
-    energy_to_air = h * (concrete_temp[0] - air_temperature)
+    # Dynamic viscocity (Sutherlands Law, ~1.81 * 10^-5 at 20°C)
+    # Source: https://www.cfd-online.com/Wiki/Sutherland's_law
+    u = (1.716 * 10**(-5)) * (air_temperature / 273.15)**(3/2) * ((273.15 + 111) / (air_temperature + 111))
 
-    # If the energy is negative, set to 0
-    if energy_to_air < 0:
-        energy_to_air = 0
+    # Kinematic viscocity
+    # Dynamic viscocity / density of air [Ideal Gas Law]
+    # Air pressure converted from hPa to Pa
+    v = u / ((air_pressure * 100) / (A_R_SPECIFIC * air_temperature))
 
-    # Return output
+    # Prandtl number (~0.71 at 20°C)
+    # Specific heat * dynamic viscocity / conductivity
+    Pr = ((A_CAPACITY * 1000) * u) / A_CONDUCTIVITY
+
+    # Convective heat transfer coefficient
+    # Simplified version of the Nusselt number formula
+    # 0.664 = empirical constant derived from solving the laminar boundary layer equations for a flat plate.
+    hc = 0.664 * A_CONDUCTIVITY * Pr**(1/3) * wind_speed**(1/2) * v**(-1/2)
+
+    # Heat transfer coefficient * area * dT
+    energy_to_air = hc * canal_area * (reference_temp[0] - air_temperature)
+
+    # Return output (W, J/s)
     return energy_to_air
 
-def concrete_heat_transfer(concrete_temp, net_radiation, energy_to_air, canal_area):  
+def reference_heat_transfer(reference_temp, net_radiation, energy_to_air, canal_area):  
     '''
-    > Calculates heat transfer for concrete
-    > Similiar to ConcreteHeatTransfer() from original code
-        - Canal width and length are excluded
+    > Calculates heat transfer for reference material
+    > Similiar to ConcreteHeatTransfer() from original code, renamed from concrete_heat_transfer()
     > Utilises the following parameters:
-        - Concrete thermal conductivity (C_CONDUCTIVITY) = 1.21 W/mK
+        - Reference thermal conductivity (R_CONDUCTIVITY)
         - Ground thermal conductivity (G_CONDUCTIVITY) = 1 W/mK
-        - Concrete depth (C_DEPTH) = 0.05 m
+        - Reference depth (R_DEPTH) = 0.05 m
     '''
     # List for storing output, defined length
-    transfer = [None] * len(concrete_temp)
+    transfer = [None] * len(reference_temp)
 
-    # Use enumerate() to iterate through the concrete temperatures
-    for index, value in enumerate(concrete_temp):
+    # Use enumerate() to iterate through the reference temperatures
+    for index, value in enumerate(reference_temp):
     
-        # For the surface concrete
+        # For the surface layer
         if index == 0:
-
             transfer[index] = net_radiation + energy_to_air
 
-        # For sections [0.05-0.10] to [0.20-0.25] (m), use concrete conductivity 
+        # For sections [0.05-0.10] to [0.20-0.25] (m), use reference conductivity 
         elif index < 5: 
 
-            # Equal to C_CONDUCTIVITY * area * difference in temperature (current section - higher section) / section depth
-            transfer[index] = C_CONDUCTIVITY * canal_area * (value - concrete_temp[index - 1]) / C_DEPTH
+            # Equal to CONDUCTIVITY * area * difference in temperature (current section - higher section) / section depth
+            transfer[index] = R_CONDUCTIVITY * canal_area * (value - reference_temp[index - 1]) / R_DEPTH
 
-        # For sections [0.25-0.30] (m) and below, use ground conductivity 
+        # For sections [0.25-0.50] (m) and below, use ground conductivity 
         else: 
 
             # As above, but using G_CONDUCTIVITY 
-            transfer[index] = G_CONDUCTIVITY * canal_area * (value - concrete_temp[index - 1]) / C_DEPTH
+            transfer[index] = G_CONDUCTIVITY * canal_area * (value - reference_temp[index - 1]) / R_DEPTH
 
     # Return list
     return transfer
 
-def concrete_energy_change(heat_transfer):
+def reference_energy_change(heat_transfer):
     '''
-    > Calculates change in concrete energy
-    > Similiar to ConcreteEnergyChange() from original code
-        - However, produces values as /h, rather than /15m (* 3600 / 4)
-    > Utilises the following parameters:
-        - Concrete depth (C_DEPTH) = 0.05 m
-        - Concrete density (C_DENSITY) = 2238 kg/m^3
-        - Concrete specific heat capacity (C_CAPACITY) = 921 J/kg K
-        - Ground specific heat capacity (G_CAPACITY) = 1900 J/kg K
-        - Ground density (G_DENSITY) = 1500 kg/m3
+    > Calculates change in reference energy
+    > Similiar to ConcreteEnergyChange() from original code, renamed from concrete_energy_change()
     '''
 
     # List for storing output, defined length
     energy_change = [0] * len(heat_transfer)
 
-    # Use enumerate() to iterate through the concrete temperatures
+    # Use enumerate() to iterate through the reference temperatures
     for index, value in enumerate(heat_transfer):
     
         # While there a deeper sections remaining:
         try:
             
-            # (Subsequent heat value - current heat value) * 3600
-            energy_change[index] = (heat_transfer[index + 1] - value) * (3600/4)
+            # (Subsequent heat value - current heat value) * (3600 / 4)
+            energy_change[index] = (heat_transfer[index + 1] - value) * MODEL_INTERVAL
 
         # There are no deeper sections remaining:
         except IndexError:
-
             break
     
-    # return output
+    # Return output
     return energy_change
 
-def concrete_temperature_change(total_energy_change, canal_area):
+def reference_temperature_change(total_energy_change, canal_area):
     '''
-    > Calculates temperature change of concrete
-    > Similiar to ConcreteTempRise() from original code
-        - Canal width and length are now included
+    > Calculates temperature change of reference material
+    > Similiar to ConcreteTempRise() from original code, renamed from concrete_temperature_change()
     > Utilises the following parameters:
-        - Concrete depth (C_DEPTH) = 0.05 m
-        - Concrete density (C_DENSITY) = 2238 kg/m^3
-        - Concrete specific heat capacity (C_CAPACITY) = 921 J/kg K
+        - Reference depth (R_DEPTH) = 0.05 m
+        - Reference density (R_DENSITY)
+        - Reference specific heat capacity (R_CAPACITY)
         - Ground specific heat capacity (G_CAPACITY) = 1900 J/kg K
         - Ground density (G_DENSITY) = 1500 kg/m3
     '''
@@ -662,61 +301,54 @@ def concrete_temperature_change(total_energy_change, canal_area):
     # List for storing output, defined length
     temperature_change = [None] * len(total_energy_change)
 
-    # Use enumerate() to iterate through the concrete temperatures
+    # Use enumerate() to iterate through the reference temperatures
     for index, value in enumerate(total_energy_change):
 
-        # For shallow sections, use concrete characteristics
+        # For shallow sections, use reference characteristics
         if index < 5: 
-
-            temperature_change[index] = value / (C_CAPACITY * (canal_area * C_DEPTH * C_DENSITY))
+            temperature_change[index] = value / (R_CAPACITY * (canal_area * R_DEPTH * R_DENSITY))
         
         # For deeper sections, use ground characteristics
         else:
-
-            temperature_change[index] = value / (G_CAPACITY * (canal_area * C_DEPTH * G_DENSITY))
+            temperature_change[index] = value / (G_CAPACITY * (canal_area * R_DEPTH * G_DENSITY))
 
     # Return output
     return temperature_change
 
+#------------------------- Water modelling -------------------------#
 
-#---- Water modelling ----#
-
-def model_water_temperature(date, longitude, latitude, shading, water_energy, water_temp, split_depths, canal_area):
+def model_water_temperature(date, longitude, latitude, shading, water_energy, water_temp, split_depths, canal_area, cloud_cover):
     '''
-    > A nested function to simplify the code structure
-    > Takes an input water temperature (K) and energy (J) and produces a new water temperature after 15 minutes based upon...
+    > Takes an input water temperature (K) and energy (J) and produces a new water temperature after 15 minutes based upon:
             - Air temperature (K)
             - Humidity (%)
             - Cloud height and cover (fractional)
             - Wind speed (m/s)
             - Shading proportion [0-1]
-    > Nested functions are described in full below
     > Similiar in scope to NewTemp() from the original code, but individual functions are outlined more fully here
-    > All sub-functions checked on 2023-06-27. Results are identical to the spreadsheet approach (when the same inputs are utilised)
     '''
 
-    # Return the total absorbed light, absorptivity and solar intensity
-    total_absorbed_light, absorptivity, intensity = absorbed_light(date, longitude, latitude)
+    # Return the total absorbed light, absorptivity and solar intensity, incorporating cloud cover
+    total_absorbed_light, absorptivity, intensity = absorbed_light(date, longitude, latitude, cloud_cover)
 
-    # Absorbed/reflected radiation due to sunlight 
-    absorbed_radiation, reflected_radiation = absorbed_reflected_radiation(shading, total_absorbed_light, intensity, absorptivity, canal_area)
+    # Absorbed / reflected radiation due to sunlight (W, J/s)
+    absorbed_radiation, _ = absorbed_reflected_radiation(shading, total_absorbed_light, intensity, absorptivity, canal_area)
 
-    # Energy gain
+    # Energy gain (W)
     total_sunlight_energy = sunlight_energy(absorbed_radiation, split_depths)
 
-    # Net energy change
+    # Net energy change (W)
     net_energy_change = net_sunlight_energy(total_sunlight_energy, water_energy)
 
-    # Change in water temperature
+    # Change in water temperature (K)
     water_temperature_change = temperature_change(net_energy_change, canal_area)
 
-    # Final water temperature for model run, overwriting earlier list
+    # Final water temperature for model run (K), overwriting earlier list
     water_temperature = [x + y for x, y in zip(water_temp, water_temperature_change)] 
 
     # Return output
     return water_temperature, absorbed_radiation
     
-
 def solar_absorptivity(solar_position):
     '''
     > This function returns the absorptivity of water given a direct sunlight angle, utilising the Fresnel Equations
@@ -724,7 +356,6 @@ def solar_absorptivity(solar_position):
     > Utilises the following parameters:
         - Refractive index of water (RIW) = 1.33
         - Refractive index of air (RIA) = 1
-    > Tested against the Excel spreadsheet: returns an identical value
     '''
     
     # Zenith angle (radians)
@@ -744,7 +375,7 @@ def solar_absorptivity(solar_position):
     # Return output
     return absorptivity
 
-def absorbed_light(date, longitude, latitude):
+def absorbed_light(date, longitude, latitude, cloud_cover):
     '''
     > This function returns the total absorbed light (W/m^2), and the solar absorptivity
     > Used later in absorbed_reflected_radiation()
@@ -752,7 +383,10 @@ def absorbed_light(date, longitude, latitude):
     '''
 
     # Calculate the overhead sun intensity and the solar altitude (°)
-    intensity, solar_altitude = solar_intensity(date, longitude, latitude)
+    intensity, solar_altitude = solar_intensity(date, longitude, latitude) 
+
+    # Account for cloud cover
+    intensity = intensity * cloud_cover_effect(cloud_cover) 
 
 	# if intensity (W/m^2) is > 0 (day) 
     if intensity > 0:
@@ -784,18 +418,16 @@ def absorbed_reflected_radiation(shading_proportion, total_absorbed_light, inten
     unshaded_area = canal_area * (1 - shading_proportion)
 
     # Absorbed and reflected radiation calculations
-    absorbed_radiation = (unshaded_area + shaded_area * SHADE) * total_absorbed_light
+    absorbed_radiation = (unshaded_area + shaded_area * SHADE) * total_absorbed_light 
     reflected_radiation = (unshaded_area + shaded_area * SHADE) * intensity * (1 - absorptivity)
     
-    # Return the absorbed radiation and reflected radiation
+    # Return the absorbed radiation and reflected radiation (W)
     return absorbed_radiation, reflected_radiation
-
 
 def sunlight_energy(absorbed_radiation, split_depths):
     '''
     > This function returns the energy gained by sunlight (J)
     > Similar functionality as the SunlightEnergy() function from the original code
-    > However, converts to J/h, rather than J/15m (* 3600 / 4)
     > Utilises the following parameters:
         - Vertical extinction coefficient (VEC) = 3 (% of surface light absorbed or scattered in a 1 m long vertical column of water)
         - Canal depth intervals (INTERVAL) = 0.2 m (decimal)
@@ -809,8 +441,8 @@ def sunlight_energy(absorbed_radiation, split_depths):
         # While there a deeper sections remaining:
         try:
 
-            # Calculates energy: converting from W/m^2 to J/s 
-            total_sunlight_energy[index] = (absorbed_radiation * exp(-VEC * (depth - INTERVAL)) - absorbed_radiation * exp(-VEC * depth)) * (3600/4)
+            # Calculate total energy
+            total_sunlight_energy[index] = (absorbed_radiation * exp(-VEC * (depth - INTERVAL)) - absorbed_radiation * exp(-VEC * depth)) * MODEL_INTERVAL
         
         # There are no deeper sections remaining:
         except IndexError:
@@ -819,10 +451,9 @@ def sunlight_energy(absorbed_radiation, split_depths):
     # Return output
     return total_sunlight_energy
 
-    
 def net_sunlight_energy(total_sunlight_energy, water_energy):
     '''
-    > This function returns the net energy gained by sunlight (J), incorporating the starting energy amount
+    > This function returns the net energy gained by sunlight (W, J/s), incorporating the starting energy amount
     > Similar functionality as the NetSunlightEnergy() function from the original code
     ''' 
 
@@ -868,135 +499,229 @@ def temperature_change(net_energy_change, canal_area):
     # Return dictionary (°C)
     return total_temperature_change    
 
-
 def model_energy_change(air_temperature, relative_humidity, cloud_height, cloud_cover, wind_speed, air_pressure,
-                        water_temperature, canal_area, initial_water_k):
+                        water_temperature, canal_area, initial_water_k, absorbed_radiation):
     '''
-    > A nested function to simplify the code structure
     > Takes an input water temperature (K) and energy (J) and produces a new water energy (J) after 15 minutes
-    > Nested function are described in full below
     > Similiar in scope to HeatTransfer() from the original code, but individual functions are outlined more fully here
-    > All sub-functions checked on 2023-06-27 (some modifications required). Results now identical to the spreadsheet approach (when the same inputs are utilised)
-    > Additional fluxes that could be added:
-        - Energy loss for bed heat exchange (Qbhf)
-        - Energy change, friction at the bed and banks (Qf)
-        - Energy change, groundwater discharge, longitudinal advective heat flux (Qa)
     '''
      
-    # Model net thermal emissions, based on surface water temperature
+    # Model net thermal emissions, based on surface water temperature (W, J/s)
     modelled_thermal_emissions = net_thermal_emissions(air_temperature, relative_humidity, cloud_height, cloud_cover, initial_water_k, canal_area) 
     
-    # Evaporation rate
-    modelled_evaporation_rate, modelled_surface_evaporation_rate, modelled_vapour_pressure = evaporation_rate(air_temperature, wind_speed, relative_humidity, initial_water_k)
+    # Models the evaporation rate (m/d) and vapour pressures (hPa) after Webb and Zhang (1998)
+    modelled_evaporation_rate, modelled_saturation_vapour_pressure, modelled_vapour_pressure = evaporation_rate(air_temperature, wind_speed, relative_humidity, initial_water_k)
 
-    # Modelled evaporation energy
-    modelled_evaporation_energy = evaporation_energy(modelled_evaporation_rate)
+    # Modelled energy flux due to evaporation (J/m^2/day) 
+    modelled_evaporation_energy = evaporation_energy(modelled_evaporation_rate, air_temperature, initial_water_k)
 
-    # Modelled evaporation power
+    # Modelled evaporation power (W, J/s), accounting for canal area
     modelled_evaporation_power = evaporation_power(modelled_evaporation_energy, canal_area)
-
-    # Cooling, assuming 50% split of evaporation cooling effect between air and water
-    modelled_evaporation_cooling = modelled_evaporation_power / 2
-
+        
     # Sensible heat calculations
-    modelled_sensible_heat = sensible_heat(air_temperature, air_pressure, initial_water_k, 
-                  modelled_surface_evaporation_rate, modelled_vapour_pressure, modelled_evaporation_power)
-    
-    # Energy for the surface layer (J/h)
-    modelled_surface_heat_transfer = surface_heat_transfer(modelled_evaporation_cooling, modelled_thermal_emissions, modelled_sensible_heat)
+    modelled_sensible_heat = sensible_heat(air_temperature, air_pressure, initial_water_k, wind_speed, 
+                  modelled_saturation_vapour_pressure, modelled_vapour_pressure, modelled_evaporation_power, canal_area)
 
-    # Energy for all layers (J/h)
+    # Partition energy sources for the latent flux ['water fraction', 'sensible fraction', 'radiation fraction']
+    estimated_latent_proportion = partition_latent_heat_flux(modelled_sensible_heat, modelled_evaporation_power, modelled_thermal_emissions, absorbed_radiation)
+
+    # If evaporation occurs, the energy fraction from the air is a rough estimate of evaporative cooling 
+    if modelled_evaporation_power > 0:
+        latent_cooling = modelled_evaporation_power * estimated_latent_proportion['sensible fraction']
+
+    # No evaporative cooling occurs 
+    else:
+        latent_cooling = 0
+
+    # Energy transfer for the surface layer to / from the air (J / 15 mins), the sum of the sensible and the latent heat fluxes, and net longwave radiation (emissions - thermal absorption)
+    modelled_surface_heat_transfer = surface_heat_transfer(modelled_evaporation_power, modelled_thermal_emissions, modelled_sensible_heat) 
+
+    # Energy for all layers (J / 15 mins)
     modelled_energy = canal_heat_transfer_convection(modelled_surface_heat_transfer, water_temperature, canal_area)
-
-    # Created dictionary to return other important values, used for modelling air temperature change
-    energy_values = {'sensible_heat' : modelled_sensible_heat,
-                   'evaporation_cooling' : modelled_evaporation_cooling,
-                   'net_thermal_emissions' : modelled_thermal_emissions}
+    
+    # Created dictionary to return key variables (J / 15 mins)
+    energy_values = {'sensible_heat' : modelled_sensible_heat * MODEL_INTERVAL,
+                   'latent_fraction' : latent_cooling * MODEL_INTERVAL, 
+                   'net_thermal_emissions' : modelled_thermal_emissions * MODEL_INTERVAL}
 
     # Returns output
     return modelled_energy, energy_values
 
+
+def partition_latent_heat_flux(sensible_flux, latent_flux, thermal, shortwave):
+    '''
+    > Partition latent heat flux into contributions from water (via storage), air (sensible), and radiation (net radiation), based on energy conservation.
+    > Inputs: 
+        - sensible_flux: W/m² (positive = energy loss to air)
+        - latent_flux: W/m² (positive = energy loss via evaporation)
+        - net_longwave: W/m² (emission - absorption; positive = energy loss)
+        - shortwave: W/m² (absorbed shortwave)
+    > Outputs
+        - Dictionary of fractional contributions to latent heat
+    '''
+
+    # Net radiation = absorbed shortwave - net longwave loss
+    net_radiation = shortwave - thermal
+
+    # Storage change = net radiation - sensible - latent
+    storage_change = net_radiation - sensible_flux - latent_flux
+
+    # Only negative storage (energy release) supports latent flux
+    contrib_water = max(-storage_change, 0)
+
+    # Air contributes energy if sensible flux is negative
+    contrib_air = max(-sensible_flux, 0)  
+
+    # Radiation contributes if there is net gain
+    contrib_rad = max(net_radiation, 0)   
+
+    # Sum of contributions
+    total_contrib = contrib_water + contrib_air + contrib_rad
+
+    # Return if latent flux is null
+    if latent_flux == 0:
+        return {'water fraction': 0.0, 'sensible fraction': 0.0, 'radiation fraction': 0.0}
+
+    # Avoid division by zero: all components zero or negative
+    if total_contrib == 0:
+        return {'water fraction': 0.0, 'sensible fraction': 0.0, 'radiation fraction': 0.0}
+
+    # Normalize to latent flux
+    scale = latent_flux / total_contrib
+
+    # Return energy contribution as a fraction of the latent flux
+    return {
+        'water fraction': contrib_water * scale / latent_flux,
+        'sensible fraction': contrib_air * scale / latent_flux,
+        'radiation fraction': contrib_rad * scale / latent_flux
+    }
+
+    
+def model_air_density(air_temperature, air_pressure):
+    '''
+    > A function to calculate air density (kg/m³) using air temperature (K) and air pressure (Pa)
+    > Parameters:
+        - Specific gas constant for dry air (A_R_SPECIFIC) = 287.05 J/kg·K
+    '''
+
+    # Modelled air density, converting air pressure from hPa to Pa
+    return (air_pressure * 100) / (A_R_SPECIFIC * air_temperature)
+
+def model_water_density(water_temperature):
+    '''
+    > A function to calculate water density (kg/m³) using water temperature (K)
+    > Source: Kell (1975) cited in Jones and Harris (1992): https://pmc.ncbi.nlm.nih.gov/articles/PMC4909168/
+    '''
+
+    # Convert water K to °C
+    wt_celcius = water_temperature - 273.15
+
+    # Return modelled water density, following Kell (1975)
+    return (999.83952 
+            + 16.945176 * wt_celcius 
+            - 7.9870401 * 10**(-3) * wt_celcius**2 
+            - 46.170461 * 10**(-6) * wt_celcius**3 
+            + 105.56302 * 10**(-9) * wt_celcius**4 
+            - 280.54253 * 10**(-12) * wt_celcius**5) / (1 + 16.897850 * 10**(-3) * wt_celcius)
+
 def water_emissions(water_temperature, canal_area):
     '''
     > Function returns the radiative emissions from water (W/m^2), based on the water temperature (K)
-    > Similiar functionality as the WaterEmmissions() function from the original code:
-        - Rather than normalising to the width of the canal, this operates on a point by point basis
+    > Similiar functionality as the WaterEmmissions() function from the original code
     > Uses the following parameters:
         - Stefan-Boltzmann Constant (SB) = 5.67*10**(-8)
         - Emissivity of water (E) = 0.95
-    > Similiar functionality as the WaterEmmissions() function from the original code
     '''
-    # Return output (W/m^2) = W = ε σT4 (https://doi.org/10.1016/B978-0-12-083980-3.50013-9)
-    return (E * SB * (water_temperature**4)) * canal_area
-
+    # Return output (W/m) = εσT4 (https://doi.org/10.1016/B978-0-12-083980-3.50013-9)
+    return (canal_area * E * SB * water_temperature**4)
 
 def net_thermal_emissions(temperature, relative_humidity, cloud_height, cloud_cover, water_temperature, canal_area):
     '''
     > Net thermal emissions (emissions - thermal absorption)
     > Identical to NetThermalEmissions() from original code
     '''
-    # Return output
+
+    # Return output (W)
     return water_emissions(water_temperature, canal_area) - thermal_absorption(temperature, relative_humidity, cloud_height, cloud_cover, canal_area)
 
-def surface_evaporation_rate(water_temperature): 
+def saturation_vapour_pressure(temperature): 
     '''
-    > This function returns the evaporation rate (mm/day), utilising the surface water temperature in K
-    > Similar functionality as the Ew() function from the original code
+    > This function returns saturation vapour pressure (hPa), utilising the temperature in K
+    > Similar functionality as the Ew() function from the original code, renamed from surface_evaporation_rate()
+    > For modelling the evaporation_rate(), this utilises vapour pressure at the water surface, following Webb and Zhang (1998)
     ''' 
-    # Saturated vapour pressure at surface water temperature, converting to mbar
-    evaporation_rate = exp(77.345 + 0.0057 * (water_temperature) - 7235 / (water_temperature)) / pow((water_temperature), 8.2) / 100   
 
-    # Return output
-    return evaporation_rate
+    # Saturation vapour pressure (Pa)
+    modelled_svp = exp(77.345 + 0.0057 * (temperature) - 7235 / (temperature)) / pow((temperature), 8.2)
+
+    # Return output, converting Pa to hPa (/100)
+    return modelled_svp / 100
 
 def evaporation_rate(air_temperature, wind_speed, relative_humidity, initial_water_k):
     '''
-    > This function returns the evaporation rate (m/day), plus the surface rate and vapour pressure
+    > This function returns the evaporation rate (m/day), plus the saturation vapour pressure and actual vapour pressure
     > Identical functionality as the Ev() function from the original code, but simplified
     '''
 
-    # Evaporation rate (mm/day, converted to m/day)
-    vap_pressure = vapour_pressure(air_temperature, relative_humidity)
-    surf_evaporation_rate = surface_evaporation_rate(initial_water_k)
+    # Saturation and actual vapour pressure (hPa)
+    modelled_vapour_pressure = vapour_pressure(air_temperature, relative_humidity)
+    modelled_saturation_vapour_pressure = saturation_vapour_pressure(initial_water_k)
 
-    # Return three values 
-    return 0.165 * (0.8 + 0.864 * wind_speed) * (surf_evaporation_rate - vap_pressure) / 1000, surf_evaporation_rate, vap_pressure
+    # Convert wind speed from 10 m to 2 m height, assuming neutral conditions (1/7)
+    # Source: Touma (1977) https://doi.org/10.1080/00022470.1977.10470503
+    wind_speed_2m = wind_speed * pow(2 / 10, 1 / 7)
+
+    # Evaporation rate (mm/day) after Webb and Zhang (1998), Equation 6 
+    # An alternative approach would be to use the Penman Equation, which also incorporates radiative inputs
+    modelled_evaporation_rate = 0.165 * (0.8 + (0.864 * wind_speed_2m)) * (modelled_saturation_vapour_pressure - modelled_vapour_pressure)
+
+    # Return:
+    # [1] Evaporation rate in m/d (/1000)
+    # [2] Saturation vapour pressure at the surface water temperature (hPa) 
+    # [3] Vapour pressure at air temperature (hPa)
+    return modelled_evaporation_rate / 1000, modelled_saturation_vapour_pressure, modelled_vapour_pressure
 
 def vapour_pressure(air_temperature, relative_humidity):   
     '''
-    > This function returns air vapour pressure (mbar), utilising the following climate parameters
+    > This function returns air vapour pressure (hPa, mbar), utilising the following climate parameters
         - Air temperature (K)
         - Relative humidity
     > The function also utilises the following parameters:
         - Constant to calculate dew point (DEW_POINT_B) = 17.67
         - Constant to calculate dew point (DEW_POINT_C) = 243.5
         - Ratio of latent heat to water vapour gas constant (LRV) = (L*1000)/RV  
-        - Baseline Pressure at Triple Point (BASE_PRESSURE) = 0.611 kPa
-        - Triple point of water (TPW) = 273.0 K
+        - Baseline Pressure at Triple Point (BASE_PRESSURE) = 0.611657 kPa
+        - Triple point of water (TPW) = 273.16 K
     > Identical functionality as the Ea() function from the original code, but with clearer signposting of constants
     '''
 
-    # Calculate dew point temperature (converting between to K and °C)
+    # Calculate Magnus-Tetens approximation for dew point temperature (converting between to K and °C)
     y = log(relative_humidity * 0.01) + DEW_POINT_B * (air_temperature - 273.15) / (DEW_POINT_C + (air_temperature - 273.15))
     dpt = DEW_POINT_C * y / (DEW_POINT_B - y) + 273.15
 
-    # Vapour pressure at air temperature (K, convert to mbar)
+    # Vapour pressure at air temperature (kPa, convert to hPa / mbar)
     vapour_pressure = BASE_PRESSURE * (exp(LRV * ((1.0 / TPW) - (1 / dpt)))) * 10
 
     # Return output
     return vapour_pressure
 
-def evaporation_energy(modelled_evaporation_rate):
+def evaporation_energy(modelled_evaporation_rate, air_temperature, water_temperature):
     '''
-    > This function returns the energy loss to evaporation (J/m^2/day)
+    > This function returns the amount of heat lost by evaporation or gained through condensation for the water body (J/m^2/day) 
+    > Source: Webb and Zhang (1998), Equation 7
     > The function also utilises the following parameters:
         - Latent heat of vapourisation (L) = 2454.9 J/g
-        - Specific weight of water (WATER_WEIGHT) = 999286 g/m^3
     > Identical functionality as the EvaporationEnergy() function from the original code, but simplified
     '''
 
-	# Return energy 
-    return modelled_evaporation_rate * L * WATER_WEIGHT
+    # Latent heat of vaporisation, as a function of temperature after Webb and Zhang (1998), Equation 8
+    modified_L = L - (2.366 * (air_temperature - 273.15))
+
+    # Calculation of water density (kg/m3)
+    water_density = model_water_density(water_temperature) 
+
+	# Return evaporative flux (W m/2), using water density in g m^3
+    return modelled_evaporation_rate * modified_L * (water_density * 1000)
     
 def evaporation_power(modelled_evaporation_energy, canal_area):
     '''
@@ -1004,28 +729,44 @@ def evaporation_power(modelled_evaporation_energy, canal_area):
     > Similiar functionality as the EvaporationPower() function from the original code
     '''
 
-    # Power loss to evaporation per metre area (W/m)
+    # Power loss to evaporation for entire area (W, J/s) per second [86,400 seconds per day]
     return modelled_evaporation_energy * canal_area * (1 / 86400)  
 
-def sensible_heat(air_temperature, pressure, water_temperature, 
-                  modelled_surface_evaporation_rate, modelled_vapour_pressure, modelled_evaporation_power):
+def sensible_heat(air_temperature, air_pressure, water_temperature, wind_speed, 
+                  modelled_surface_evaporation_rate, modelled_vapour_pressure, modelled_evaporation_power,
+                  canal_area):
     '''
-    > Calculates sensible heat transfer using pressure, and water/air temperatures (K)
+    > Calculates sensible heat transfer (W, J/s) using water/air temperatures (K), air pressure (Pa) and wind speed (m/s)
     > Similiar functionality to SensibleHeat() from the original code
+    > Approach following Moore and Leach (2021) https://doi.org/10.1029/2020WR028712
     '''   
-    # Bowen Ratio
-    bowen = (0.61 * pressure * (water_temperature - air_temperature) / (modelled_surface_evaporation_rate - modelled_vapour_pressure)) / 1000
 
-    # Return sensible heat (W/m)
-    return modelled_evaporation_power * bowen
+    # Function to calculate air density using temperature and pressure
+    air_density = model_air_density(air_temperature, air_pressure)
 
-def surface_heat_transfer(modelled_evaporation_cooling, modelled_thermal_emissions, modelled_sensible_heat):     
+    # Empirical constants calculated by Moore and Leach (2021), for a reference temperature of 15 ◦C, and using Penman wind function coefficient values
+    # "Varying air temperature from 0 to 30 ◦C is associated with a variation of just over ± 5% in the computed coefficients relative to the reference values at 15 ◦C"
+    # "...temperature-dependence can be ignored for practical application."
+    a = 1.99 * 10**(-3)
+    b = 2.13 * 10**(-3)
+
+    # Density of air (kg/m3), Specific heat (J·kg*k), constants, wind speed (m/s), temperatures (K), area (m2)
+    Qh = air_density * (A_CAPACITY * 1000) * (a + b * wind_speed) * (water_temperature - air_temperature) * canal_area
+
+    # Return sensible heat flux (W, J/s)
+    return Qh
+
+def surface_heat_transfer(latent_flux, radiative_flux, sensible_flux):     
     '''
-    > Calculates heat transfer between water and air, incorporating evaporation, thermal emissions and sensible heat
+    > Calculates heat transfer from the water surface, incorporating:
+        - latent heat flux, energy used for evaporation or condensation
+        - sensible heat flux, heat transfer of heat through conduction and convection, without any change in state, based on temperature difference
+        - radiative heat flux, heat transfer via radiation
     > Similiar functionality to SurfaceHeatTransfer() from the original code
     '''   
+
     # Return output, converting from /s to /15m
-    return (modelled_evaporation_cooling + modelled_thermal_emissions + modelled_sensible_heat) * 3600/4
+    return (latent_flux + radiative_flux + sensible_flux) * MODEL_INTERVAL 
 
 def canal_heat_transfer(modelled_surface_heat_transfer, water_temperature, canal_area):
     '''
@@ -1052,7 +793,7 @@ def canal_heat_transfer(modelled_surface_heat_transfer, water_temperature, canal
         # For any deeper layers
         else:
 
-            # Obtaining the preceding temperature
+            # Obtain the preceding temperature
             higher_depth = water_temperature[index - 1]
       
             # Calculate conductivity
@@ -1062,13 +803,13 @@ def canal_heat_transfer(modelled_surface_heat_transfer, water_temperature, canal
             if current_temperature > higher_depth: 
 
                 # Energy value (/15m)
-                modelled_heat_transfer[index] = (conductivity + CONVECTION * canal_area * (current_temperature - higher_depth)) * 3600/4
+                modelled_heat_transfer[index] = (conductivity + CONVECTION * canal_area * (current_temperature - higher_depth)) * MODEL_INTERVAL
                 
             # If temperature <
             else:
                 
                 # Energy value (/15m)
-                modelled_heat_transfer[index] = conductivity * 3600/4
+                modelled_heat_transfer[index] = conductivity * MODEL_INTERVAL
 
     # Return energy values
     return modelled_heat_transfer
@@ -1083,7 +824,7 @@ def canal_heat_transfer_convection(modelled_surface_heat_transfer, water_tempera
         - When temperature in a lower layer is less than the layer above, there is no energy flow
         - However, this does not work at or below 4 degrees, where the process is reversed
     > This new function updates this as follows:
-        - The convective effect dependent on absolute distance from 4 degrees
+        - The convective effect dependent on absolute distance from 4 degrees (277.15 K)
         - i.e., 2 degrees and 6 degrees would look the same in terms of convection
         - This is a simplistic assumption (density is not directly proportional) but is an improvement on the previous approach
         - Model performance will still degrade once temperature reaches 0 degrees where latent heat and freezing effects would need to be implemented
@@ -1108,7 +849,7 @@ def canal_heat_transfer_convection(modelled_surface_heat_transfer, water_tempera
         # For any deeper layers
         else:
 
-            # Obtaining the preceding temperature
+            # Obtain the preceding temperature
             higher_depth = water_temperature[index - 1]
 
             # Absolute difference from 4°C (maximum density)
@@ -1125,96 +866,28 @@ def canal_heat_transfer_convection(modelled_surface_heat_transfer, water_tempera
                 if current_temperature > higher_depth:
 
                     # Energy value (/15m)
-                    modelled_heat_transfer[index] = (conductivity + CONVECTION * canal_area * (lower_temp - upper_temp)) * 3600 / 4
+                    modelled_heat_transfer[index] = (conductivity + CONVECTION * canal_area * (lower_temp - upper_temp)) * MODEL_INTERVAL
 
                 # If temperature in lower layer <= temperature in the layer above, -CONVECTION
                 else:
                     # Energy value (/15m)           
-                    modelled_heat_transfer[index] = (conductivity + -CONVECTION * canal_area * (lower_temp - upper_temp)) * 3600 / 4
+                    modelled_heat_transfer[index] = (conductivity + -CONVECTION * canal_area * (lower_temp - upper_temp)) * MODEL_INTERVAL
 
             # If difference from 4°C in lower layer <= difference in the layer above
             else:
 
                 # Energy value (/15m)
-                modelled_heat_transfer[index] = conductivity * 3600 / 4
+                modelled_heat_transfer[index] = conductivity * MODEL_INTERVAL
 
     # Return energy values
     return modelled_heat_transfer
 
-#---- Air temperture modelling ----#
 
-def model_urban_cooling(modelled_sensible_heat, modelled_evaporation_cooling, net_thermal_emissions,
-                        absorbed_sunlight, 
-                        concrete_net_radiation, concrete_energy_to_air, concrete_solar_radiation,
-                        buffered_canal_area):
-    '''
-    > A nested function to simplify the code structure
-    > Models air temperature change in response to changing canal temperatures i.e. urban cooling
-    > Nested functions are described in full below
-    > Similiar in scope to NetTempChange() from the original code, but rather than calculating many of the variables again...
-    > ... these are utilised from earlier functions
-    '''
-
-
-
-    # Energy per kelvin change (kJ/K) = Thermal capacity * mass of air
-    energy_per_kelvin = A_CAPACITY * (A_DENSITY * (buffered_canal_area * A_HEIGHT))
-
-    ''' > Calculations for water '''
-
-    # Energy gain of air from the canal (W/m)
-    water_energy_gain = -((-modelled_evaporation_cooling) - modelled_sensible_heat - net_thermal_emissions)
-
-    # Water net energy gain (energy gain - enery removed as absorped sunlight) (W/m)
-    water_net_energy_gain = water_energy_gain - absorbed_sunlight
-
-    # Temperature change of air in surrounding area (K) based on water temperature
-    air_temperature_change_water = water_net_energy_gain / energy_per_kelvin
-
-    ''' > Calculations for concrete ''' 
-
-    # Energy gain of air from the concrete (W/m)
-    concrete_energy_gain = concrete_net_radiation + concrete_energy_to_air
-    
-    # Concrete net energy gain (energy gain - enery removed as absorped sunlight) (W/m)
-    concrete_net_energy_gain = concrete_energy_gain - concrete_solar_radiation
-
-    # Temperature change of air in surrounding area (K) based on water temperature
-    air_temperature_change_concrete = concrete_net_energy_gain / energy_per_kelvin
-
-    ''' > Water / concrete differences ''' 
-    
-    # Energy and temperature difference
-    difference_energy = water_net_energy_gain - concrete_net_energy_gain # W/m
-    difference_temperature = air_temperature_change_water - air_temperature_change_concrete # K
-
-    # Energy delivered to air over 15 minutes (kJ/(m*h)) 
-    energy_delivered = difference_energy * (3600/4) / (buffered_canal_area * A_HEIGHT)
-
-    # Corresponding temperature change
-    temperature_change = energy_delivered / energy_per_kelvin
-
-    # Created dictionary to store key output values
-    output_values = {'air_water_k' : air_temperature_change_water,
-                   'air_concrete_k' : air_temperature_change_concrete,
-                   'temperature_difference' : difference_temperature,
-                   'energy_difference' : difference_energy,
-                   'modelled_temperature_change' : temperature_change,
-                   'evaporation_cooling' : modelled_evaporation_cooling,
-                   'sensible_heat' : modelled_sensible_heat,
-                   'thermal_emissions' : net_thermal_emissions,
-                   'water_net_energy_gain' : water_net_energy_gain, 
-                   'concrete_net_energy_gain' : concrete_net_energy_gain}
-
-    # Air temperature suppression
-    return output_values
-
-
-def model_spin_up(water_temp, water_energy, concrete_temp, 
+def model_spin_up(water_temp, water_energy, reference_temp, 
                   split_points, canal_area, lat, lon, 
                   spin_path, repetitions, record, canal_id):
     '''
-    > Function for model spin up 
+    > Function for model spin up, based on a composite climate record for 2021-12-15
     > Using input temperatures (K) and energy values (J), the model is run until equilibrium is reached
     '''
 
@@ -1225,7 +898,7 @@ def model_spin_up(water_temp, water_energy, concrete_temp,
     # Init lists for storing outputs
     output_water = []
     output_energy = []
-    output_concrete = []
+    output_reference = []
 
     # List of keys
     keys = [int(x) for x in spin_up_climate.keys()]
@@ -1254,14 +927,6 @@ def model_spin_up(water_temp, water_energy, concrete_temp,
             # Starting surface water temperature (K) for this model step
             initial_water_k = water_temp[0]
 
-            # Model water temperatures
-            water_temp, _ = model_water_temperature(local_datetime, lon, lat, 
-                                                        0, # Presence/absence of shading
-                                                        water_energy, # Energy (J)
-                                                        water_temp, # Temperature (K)
-                                                        split_points, # Canal depths (m)
-                                                        canal_area) # Canal area (m^2)
-            
             # Try and extract current climate
             try:
                 current_climate = spin_up_climate[start_unix]
@@ -1274,35 +939,47 @@ def model_spin_up(water_temp, water_energy, concrete_temp,
 
             # Valid datetime
             else:
+
+                # Model water temperatures
+                water_temp, absorbed_radiation = model_water_temperature(local_datetime, #-------- UTC datetime
+                                                        lon, lat, #------------------------------- Geographic coordinates (WGS84)
+                                                        0, #-------------------------------------- Shading proportion [0-1] 
+                                                        water_energy, #--------------------------- Water energy (J)
+                                                        water_temp, #----------------------------- Water temperature (K)
+                                                        split_points, #--------------------------- Canal depths (m)
+                                                        canal_area, #----------------------------- Canal area (m^2)
+                                                        current_climate['cloud_cover'] / 100) #--- Cloud cover (fractional)
                 
                 # Model water energy
-                water_energy, _ = model_energy_change(current_climate['air_temperature'], # Air temperature (K)
-                                    current_climate['humidity'], # Relative humidity (%)
-                                    0.06, # Cloud height (fractional)
-                                    current_climate['cloud_cover'] / 100, # Cloud cover (fractional),  
-                                    current_climate['wind_speed'], # Wind speed (m/s)
-                                    current_climate['air_pressure'], # Air pressure
-                                    water_temp, # Water temperature (K)
-                                    canal_area, # Canal area (m^2)
-                                    initial_water_k) # Starting surface water temperature (K) for this model step 
+                water_energy, _ = model_energy_change(current_climate['air_temperature'], #------- Air temperature (K)
+                                    current_climate['humidity'], #-------------------------------- Relative humidity (%)
+                                    CLOUD_HEIGHT, #----------------------------------------------- Cloud height (fractional)
+                                    current_climate['cloud_cover'] / 100, #----------------------- Cloud cover (fractional),
+                                    current_climate['wind_speed'], #------------------------------ Wind speed (m/s)
+                                    current_climate['air_pressure'], #---------------------------- Air pressure (hPa)
+                                    water_temp, #------------------------------------------------- Water temperature (K)
+                                    canal_area, #------------------------------------------------- Canal area (m^2)
+                                    initial_water_k, #-------------------------------------------- Starting surface water temperature (K) for this model step 
+                                    absorbed_radiation) #----------------------------------------- Radiation (W)
                 
 
-                # Model concrete temperature
-                concrete_temp, _ = model_concrete_temperature(current_climate['air_temperature'], # Air temperature (K)
-                                                current_climate['humidity'],  # Relative humidity (%)
-                                                0.06, # Cloud height (fractional)
-                                                current_climate['cloud_cover'] / 100, # Cloud cover (fractional)
-                                                current_climate['wind_speed'], # Wind speed (m/s)
-                                                concrete_temp, # Concrete temperature (K)
-                                                local_datetime, # Current datetime (15m interval)
-                                                lon, lat, # Location
-                                                0, # [0-1]
-                                                canal_area) # Area (m^2)
+                # Model reference temperature
+                reference_temp, _ = model_reference_temperature(current_climate['air_temperature'], #--- Air temperature (K)
+                                                current_climate['humidity'], #-------------------------- Relative humidity (%)
+                                                CLOUD_HEIGHT, #----------------------------------------- Cloud height (fractional)
+                                                current_climate['cloud_cover'] / 100, #----------------- Cloud cover (fractional)
+                                                current_climate['wind_speed'], #------------------------ Wind speed (m/s)
+                                                current_climate['air_pressure'], #---------------------- Air pressure (hPa)
+                                                reference_temp, #--------------------------------------- Reference temperature (K)
+                                                local_datetime, #--------------------------------------- UTC datetime
+                                                lon, lat, #--------------------------------------------- Geographic coordinates (WGS84)
+                                                0, #---------------------------------------------------- Shading proportion [0-1] 
+                                                canal_area) #------------------------------------------- Area (m^2)
 
                 # Append surface temperatures and energy to output
                 output_water.append(water_temp[0])
                 output_energy.append(water_energy[0])
-                output_concrete.append(concrete_temp[0])
+                output_reference.append(reference_temp[0])
                 
                 # Add 15 minutes to the datetime
                 local_datetime += timedelta(hours = 0.25)
@@ -1311,10 +988,9 @@ def model_spin_up(water_temp, water_energy, concrete_temp,
     if record:
 
         # Zip lists and export
-        output = array(list(zip(output_water, output_energy, output_concrete)))
-        savetxt(f"../outputs/spin_up_output_{canal_id}.csv", output, delimiter = ",", header="water_k, water_j, concrete_k", fmt ='%f')
+        output = array(list(zip(output_water, output_energy, output_reference)))
+        savetxt(f"../outputs/spin_up_output_{canal_id}.csv", output, delimiter = ",", header="water_k, water_j, reference_k", fmt ='%f')
 
     # Return modified temperatures (K) and energy (J), and time-series values
-    return water_temp, water_energy, concrete_temp, output_water, output_energy, output_concrete
-
+    return water_temp, water_energy, reference_temp, output_water, output_energy, output_reference
 
