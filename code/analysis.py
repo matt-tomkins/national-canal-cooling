@@ -2,13 +2,6 @@
     > Summary files stored in /outputs
     > Figures stored in /images '''
 
-
-'''
-TO DO: Check through most, update figures, including supplementary... gitignore.... test dataset
-
-# There's probably a more interesting story that can be extracted from the heatwave analysis
-'''
-
 # Force use of Shapely 2.0
 from os import environ, remove
 environ['USE_PYGEOS'] = '0'
