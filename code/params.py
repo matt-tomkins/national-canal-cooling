@@ -9,7 +9,7 @@ from scipy.constants import physical_constants as pyc
 # Set reference ("asphalt", "concrete")
 REFERENCE_MATERIAL = "asphalt"
 
-''' Main parameters utilised in canal-cooling.py  ''' 
+''' Main parameters utilised in national_canal_cooling.py  ''' 
 
 VEC = 3                                     # Vertical extinction coefficient ------------------------ (described https://www.waterontheweb.org/under/lakeecology/04_light.html)
 SHADE = 0.2                                 # Relative light intensity from the shade ---------------- (https://doi.org/10.1002/(SICI)1099-1085(199701)11:1%3C79::AID-HYP404%3E3.0.CO;2-N) 
@@ -25,10 +25,10 @@ SHC = 4.186                                 # Specific heat capacity of water (k
 SHC_WATER = SHC * 1000                      # Specific heat capacity of water (J/kg K) --------------- (as above)
 HC_WATER = 0.58                             # Heat conductivity of water (W/m K) --------------------- (https://energyeducation.ca/encyclopedia/Thermal_conductivity)
 CONDUCTIVITY = 0.58                         # Thermal conductivity (kc) ------------------------------ (https://energyeducation.ca/encyclopedia/Thermal_conductivity)
-CONVECTION = 200                            # Convection coefficent (hc) ----------------------------- (source?)
 BASE_PRESSURE = 0.611657                    # Baseline Pressure at Triple Point (kPa) ---------------- (https://doi.org/10.1256/qj.04.94)
 DEW_POINT_B = 17.67                         # Constant (b) to calculate dew point (in evaporation) --- (https://doi.org/10.1175/1520-0493(1980)108%3C1046:TCOEPT%3E2.0.CO;2)
 DEW_POINT_C = 243.5                         # Constant (c) to calculate dew point (in evaporation) --- (https://doi.org/10.1175/1520-0493(1980)108%3C1046:TCOEPT%3E2.0.CO;2)
+CONVECTION = 200                            # Convection coefficent (hc) ----------------------------- 
 
 ''' Chosen canal parameters '''
 

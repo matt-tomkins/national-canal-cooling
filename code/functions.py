@@ -110,7 +110,7 @@ def model_reference_temperature(air_temperature, relative_humidity, cloud_height
 def cloud_cover_effect(cloud_cover):
     '''
     > Function to calculate a constant that represents the fraction of solar radiation that is blocked or diffused by clouds, following Nevins and Apell (2021)
-    > Solar irradiance was minimally impacted up to ≈50% cloud cover but decreased by ≈67% at 100% cloud cover.
+    > Solar irradiance is minimally impacted up to ≈50% cloud cover but decreases by ≈67% at 100% cloud cover.
     > Approximated using a quadratic fit of y = 1 − 0.00243x − (4.24 × 10−5)x^2
     > y is the fraction of clear sky irradiance expected and x is the percentage of cloud cover in the sky
     '''
@@ -132,10 +132,8 @@ def reference_solar_radiation(date, longitude, latitude, shading_proportion, can
     # Calculate solar intensity, incorporating cloud_cover
     intensity = solar_intensity(date, longitude, latitude)[0] * cloud_cover_effect(cloud_cover) 
 
-    # If positive
+    # If positive, calculate solar radiation
     if intensity > 0: 
-
-        # Calculate solar radiation (AN4)
         solar_rad = (unshaded_area + shaded_area * SHADE) * intensity * R_ABSORBIVITY 
 
     # Set to null, if intensity is negative:
@@ -519,19 +517,7 @@ def model_energy_change(air_temperature, relative_humidity, cloud_height, cloud_
     modelled_evaporation_power = evaporation_power(modelled_evaporation_energy, canal_area)
         
     # Sensible heat calculations
-    modelled_sensible_heat = sensible_heat(air_temperature, air_pressure, initial_water_k, wind_speed, 
-                  modelled_saturation_vapour_pressure, modelled_vapour_pressure, modelled_evaporation_power, canal_area)
-
-    # Partition energy sources for the latent flux ['water fraction', 'sensible fraction', 'radiation fraction']
-    estimated_latent_proportion = partition_latent_heat_flux(modelled_sensible_heat, modelled_evaporation_power, modelled_thermal_emissions, absorbed_radiation)
-
-    # If evaporation occurs, the energy fraction from the air is a rough estimate of evaporative cooling 
-    if modelled_evaporation_power > 0:
-        latent_cooling = modelled_evaporation_power * estimated_latent_proportion['sensible fraction']
-
-    # No evaporative cooling occurs 
-    else:
-        latent_cooling = 0
+    modelled_sensible_heat = sensible_heat(air_temperature, air_pressure, initial_water_k, wind_speed, canal_area)
 
     # Energy transfer for the surface layer to / from the air (J / 15 mins), the sum of the sensible and the latent heat fluxes, and net longwave radiation (emissions - thermal absorption)
     modelled_surface_heat_transfer = surface_heat_transfer(modelled_evaporation_power, modelled_thermal_emissions, modelled_sensible_heat) 
@@ -541,62 +527,11 @@ def model_energy_change(air_temperature, relative_humidity, cloud_height, cloud_
     
     # Created dictionary to return key variables (J / 15 mins)
     energy_values = {'sensible_heat' : modelled_sensible_heat * MODEL_INTERVAL,
-                   'latent_fraction' : latent_cooling * MODEL_INTERVAL, 
                    'net_thermal_emissions' : modelled_thermal_emissions * MODEL_INTERVAL}
 
     # Returns output
     return modelled_energy, energy_values
 
-
-def partition_latent_heat_flux(sensible_flux, latent_flux, thermal, shortwave):
-    '''
-    > Partition latent heat flux into contributions from water (via storage), air (sensible), and radiation (net radiation), based on energy conservation.
-    > Inputs: 
-        - sensible_flux: W/m² (positive = energy loss to air)
-        - latent_flux: W/m² (positive = energy loss via evaporation)
-        - net_longwave: W/m² (emission - absorption; positive = energy loss)
-        - shortwave: W/m² (absorbed shortwave)
-    > Outputs
-        - Dictionary of fractional contributions to latent heat
-    '''
-
-    # Net radiation = absorbed shortwave - net longwave loss
-    net_radiation = shortwave - thermal
-
-    # Storage change = net radiation - sensible - latent
-    storage_change = net_radiation - sensible_flux - latent_flux
-
-    # Only negative storage (energy release) supports latent flux
-    contrib_water = max(-storage_change, 0)
-
-    # Air contributes energy if sensible flux is negative
-    contrib_air = max(-sensible_flux, 0)  
-
-    # Radiation contributes if there is net gain
-    contrib_rad = max(net_radiation, 0)   
-
-    # Sum of contributions
-    total_contrib = contrib_water + contrib_air + contrib_rad
-
-    # Return if latent flux is null
-    if latent_flux == 0:
-        return {'water fraction': 0.0, 'sensible fraction': 0.0, 'radiation fraction': 0.0}
-
-    # Avoid division by zero: all components zero or negative
-    if total_contrib == 0:
-        return {'water fraction': 0.0, 'sensible fraction': 0.0, 'radiation fraction': 0.0}
-
-    # Normalize to latent flux
-    scale = latent_flux / total_contrib
-
-    # Return energy contribution as a fraction of the latent flux
-    return {
-        'water fraction': contrib_water * scale / latent_flux,
-        'sensible fraction': contrib_air * scale / latent_flux,
-        'radiation fraction': contrib_rad * scale / latent_flux
-    }
-
-    
 def model_air_density(air_temperature, air_pressure):
     '''
     > A function to calculate air density (kg/m³) using air temperature (K) and air pressure (Pa)
@@ -732,9 +667,7 @@ def evaporation_power(modelled_evaporation_energy, canal_area):
     # Power loss to evaporation for entire area (W, J/s) per second [86,400 seconds per day]
     return modelled_evaporation_energy * canal_area * (1 / 86400)  
 
-def sensible_heat(air_temperature, air_pressure, water_temperature, wind_speed, 
-                  modelled_surface_evaporation_rate, modelled_vapour_pressure, modelled_evaporation_power,
-                  canal_area):
+def sensible_heat(air_temperature, air_pressure, water_temperature, wind_speed, canal_area):
     '''
     > Calculates sensible heat transfer (W, J/s) using water/air temperatures (K), air pressure (Pa) and wind speed (m/s)
     > Similiar functionality to SensibleHeat() from the original code
@@ -824,7 +757,7 @@ def canal_heat_transfer_convection(modelled_surface_heat_transfer, water_tempera
         - When temperature in a lower layer is less than the layer above, there is no energy flow
         - However, this does not work at or below 4 degrees, where the process is reversed
     > This new function updates this as follows:
-        - The convective effect dependent on absolute distance from 4 degrees (277.15 K)
+        - The convective effect is dependent on absolute distance from 4 degrees (277.15 K)
         - i.e., 2 degrees and 6 degrees would look the same in terms of convection
         - This is a simplistic assumption (density is not directly proportional) but is an improvement on the previous approach
         - Model performance will still degrade once temperature reaches 0 degrees where latent heat and freezing effects would need to be implemented

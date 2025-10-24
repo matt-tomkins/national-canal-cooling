@@ -1,6 +1,9 @@
 results/
 images/shading-test/
 images/shadows/
+images/buildings/
+code/auxiliary.py
+code/auxiliary_code.py
 code/config.py
 code/changelog.py
 code/concrete.py

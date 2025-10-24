@@ -29,6 +29,10 @@ Datasets:
 from os import environ
 environ['USE_PYGEOS'] = '0'
 
+# Error with pyroj.Transformer
+# Source: https://gis.stackexchange.com/questions/373550/first-call-to-transform-fails-with-inf-all-subsequent-calls-are-ok-what-cou
+environ['PROJ_NETWORK'] = 'OFF'
+
 # Required packages
 from json import dump
 from numpy import linspace
@@ -58,7 +62,7 @@ def parallel_model(input_file_path, start_date, days, n_cores, shading):
     canals_gdf = read_dataframe(input_file_path)
 
     ''' Uncomment to enable quicker testing of validation canals '''
-    #options = ['lalc_73', 'nabc_2', 'suc_41', 'batc_14', 'hc_53', 'cc3_11'] 
+    #options = ['nabc_2'] # 'lalc_73', 'nabc_2', 'suc_41', 'batc_14', 'hc_53', 'cc3_11'] 
     #canals_gdf = canals_gdf.loc[canals_gdf['code_id'].isin(options)]
 
     # Split into n clusters
@@ -67,7 +71,7 @@ def parallel_model(input_file_path, start_date, days, n_cores, shading):
     # Initialises the Pool for multiprocessing (n cores)
     p = Pool(processes = n_cores)
 
-    # Define arguments, some fixed, some variable
+    # Define fixed and variable arguments
     # Canal data, start date, days of analysis, shading boolean
     args = [(i, start_date, days, shading) for i in canals_gdf]
 
@@ -94,8 +98,8 @@ def main(canals_gdf, start_date, duration_days, model_shading):
             continue
 
         # If the file already exists, skip
-        if isfile(f"../results/{REFERENCE_MATERIAL}/{folder_path}-shading/model-output-{feature_tuple.code_id}.json"):
-            print(f"../results/{REFERENCE_MATERIAL}/{folder_path}-shading/model-output-{feature_tuple.code_id}.json exists")
+        if isfile(f"../results/{REFERENCE_MATERIAL}/{folder_path}-shading/model-output-{feature_tuple.code_id}.json") or isfile(f"../test/results/{REFERENCE_MATERIAL}/{folder_path}-shading/model-output-{feature_tuple.code_id}.json"):
+            print(f"model-output-{feature_tuple.code_id}.json exists")
             continue
 
         # Init dict for storing results
@@ -110,19 +114,31 @@ def main(canals_gdf, start_date, duration_days, model_shading):
                 with open(f"../../national-canal-cooling-data/shading/shading-{feature_tuple.code_id}.json") as shading_path:
                     shading_record = load(shading_path)
 
-            # If the file is not found, skip to next feature (the model cannot be run without shading data if shading == True)
+            # If the file is not found, search for test dataset
             except FileNotFoundError:
-                print(f"Shading file MISSING for feature {feature_tuple.code_id}")
-                continue
+                try:
+                    with open(f"../test/shading/shading-{feature_tuple.code_id}.json") as shading_path:
+                        shading_record = load(shading_path)
+
+                # Skip to next feature (the model cannot be run without shading data if shading == True)
+                except FileNotFoundError:
+                    print(f"Shading file MISSING for feature {feature_tuple.code_id}")
+                    continue
 
         # Try and load climate record for current location
         try:
             with open(f"../../national-canal-cooling-data/interpolated-climate/data-{feature_tuple.code_id}.json") as climate_path:
                 climate_record = load(climate_path)
 
-        # If the file is not found, skip to next feature (the model cannot be run without climate data)
+        # If the file is not found, search for test dataset
         except FileNotFoundError:
-            continue
+            try:
+                with open(f"../test/climate/climate-{feature_tuple.code_id}.json") as climate_path:
+                        climate_record = load(climate_path)
+
+            #  Skip to next feature (the model cannot be run without climate data)
+            except FileNotFoundError:
+                continue
 
         # Localise niave datetime to aware datetime (UK) and then convert to UTC
         local_datetime = to_datetime(start_date)\
@@ -266,7 +282,6 @@ def main(canals_gdf, start_date, duration_days, model_shading):
                                             'depth_water_60' : round(water_temp[3], 3), #----------------------------------------- Water temperature at 60 - 80 cm
                                             'depth_water_80' : round(water_temp[4], 3), #----------------------------------------- Water temperature at 80 - 100 cm
                                             'water_sensible' : round(energy_values['sensible_heat'], 3), #------------------------ Sensible flux associated with water
-                                            'water_latent' : round(energy_values['latent_fraction'], 3), #-------------------- Latent flux (evaporative) associated with water
                                             'reference_sensible' : round(reference_energy_values['energy_to_air'] , 3)}}) #------- Sensible flux associated with reference material 
                 
                 # No measured data at this location
@@ -276,14 +291,18 @@ def main(canals_gdf, start_date, duration_days, model_shading):
                     output.update({unix_time : {'surface_reference_k' : round(reference_temp[0], 3), #---------------------------- Reference temperature at surface
                                             'surface_water_k' : round(water_temp[0], 3), #---------------------------------------- Water temperature at surface (0 - 20 cm)
                                             'water_sensible' : round(energy_values['sensible_heat'], 3), #------------------------ Sensible flux associated with water
-                                            'water_latent' : round(energy_values['latent_fraction'], 3), #-------------------- Latent flux (evaporative) associated with water
                                             'reference_sensible' : round(reference_energy_values['energy_to_air'] , 3)}}) #------- Sensible flux associated with reference material 
 
                 # Finish the iteration (+ 15 minutes)
                 local_datetime += timedelta(hours = 0.25)
         
+        # For the test dataset
+        if "test_" in feature_tuple.code_id:
+            dump(output, open(f"../test/results/{REFERENCE_MATERIAL}/{folder_path}-shading/model-output-{feature_tuple.code_id}.json", 'w'))
+
         # Save the output to the relevant directory (including- | excluding-shading)
-        dump(output, open(f"../results/{REFERENCE_MATERIAL}/{folder_path}-shading/model-output-{feature_tuple.code_id}.json", 'w'))
+        else:
+            dump(output, open(f"../results/{REFERENCE_MATERIAL}/{folder_path}-shading/model-output-{feature_tuple.code_id}.json", 'w'))
 
         # Summary statement
         print(f"Completed {feature_tuple.code_id}")
@@ -303,9 +322,10 @@ if __name__ == '__main__':
     # Initialise timer
     start = perf_counter()
     
-    # Files for Britain and Ireland
+    # Files for Britain and Ireland, and the test dataset
     file_names = ["../data/canal-geometries-filtered-modified-dissolved-id-width.shp", 
-                  "../data/urban-canals-ireland-dissolved-id-tm65-width.shp"]
+                  "../data/urban-canals-ireland-dissolved-id-tm65-width.shp",
+                  "../test/test-canals.shp"]
 
     # Iterate through Britain and Ireland
     for f in file_names:
