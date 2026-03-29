@@ -13,7 +13,7 @@ import imageio
 from scipy import stats
 from copy import deepcopy
 from glob import glob as g
-from pandas import read_csv
+from pandas import read_csv, DataFrame
 from pywaffle import Waffle
 import statsmodels.api as sm
 from os.path import basename
@@ -29,7 +29,7 @@ import matplotlib.patches as mpatches
 from timeit import default_timer as timer
 from dateutil.relativedelta import relativedelta
 from matplotlib_scalebar.scalebar import ScaleBar
-from matplotlib.pyplot import Rectangle, subplots, savefig, rcParams, rc, figure, setp
+from matplotlib.pyplot import Rectangle, subplots, savefig, rcParams, rc, figure, setp, show
 from numpy import arange, quantile, linspace, loadtxt, array, sum as np_sum, abs, ediff1d, argsort, cumsum, searchsorted, concatenate
 
 # Import user defined functions
@@ -110,7 +110,7 @@ def main():
     #-----> 'shading_boolean' (Boolean): Include (True) or exclude shading effects (False)
     #-----> 'region_save' (Boolean): Save wgbt outputs for each datetime for each region
     #-----? 'humidity_range' (List): List of humidity values (+%) to include in the analysis, or an empty list 
-    #simplified_wbgt(True, True, [1, 3, 10])
+    #simplified_wbgt(True, True, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 
     # [*] Calculate the effects of modifying the selected cooling distance
     #-----> 'shading_boolean' (Boolean): Include (True) or exclude shading effects (False)
@@ -132,7 +132,8 @@ def main():
     #-----> 'shading_boolean' (Boolean): Include (True) or exclude shading effects (False)
     #-----> 'canal_list' (List): List of canal IDs
     #-----> 'depth' (Numeric): Water depth (cm)
-    #draw_figure_3(True, ['lalc_73', 'nabc_2', 'suc_41', 'batc_14', 'hc_53', 'cc3_11'], depth=40) 
+    #-----> 'start_date' (String): To filter plot to a specific date of the year ("YYYY-MM-DD") e.g., "2022-06-01" or None
+    #draw_figure_3(True, ['lalc_73', 'nabc_2', 'suc_41', 'batc_14', 'hc_53', 'cc3_11'], depth=40, start_date=None) 
 
     # Figure 4: Fluctuations in median air temperature change at desired interval, plus histogram
     #-----> 'start_date' (String): Start date for plotting ("2022-01-01 10:00:00")
@@ -168,13 +169,25 @@ def main():
 
     # [*] Plot to illustrate the relationship between regional air temperature effects and attributes
     #-----> 'attributes' (List): List of attributes to plot (max. 2). 
-    #-----> Function designed for 'cloud_cover' and 'wind_speed', which show a clear correlation with air temperature effects
-    # draw_supplementary_figure_region_scatter(['cloud_cover', 'wind_speed']) 
+    #-----> 'period' (String): To plot 'day' or 'night' values
+    #-----> Function designed for 'cloud_cover' and 'wind_speed', which show a clear correlation with daytime air temperature effects
+    #-----> For nighttime air temperature effects, 'humidity' appears most important
+    # draw_supplementary_figure_region_scatter(['cloud_cover', 'wind_speed'], 'day') 
 
     # [*] Plot to showcase trends in water, reference and air temperatures, and energy fluxes, during heatwaves
     #-----> 'feature_name' (String): Feature ID to plot
     #-----> 'heatwave' (String): Month to plot ['June', 'July', 'August']
     # draw_supplementary_figure_heatwave_trends("guc_126", "July") 
+
+    # [*] Plot to visualise sensitivity of wet-bulb globe temperature to incorporating ΔPT and changing humidity
+    #-----> 'shading_boolean' (Boolean): Include (True) or exclude shading effects (False)
+    #draw_supplementary_figure_wbgt(True)
+
+    # [*] Plot to illustrate variability in hourly model performance
+    #-----> 'shading_boolean' (Boolean): Include (True) or exclude shading effects (False)
+    #-----> 'canal_list' (List): List of canal IDs
+    #-----> 'depth' (Numeric): Water depth (cm)
+    # draw_supplementary_figure_hourly_model_performance(True, ['lalc_73', 'nabc_2', 'suc_41', 'batc_14', 'hc_53', 'cc3_11'], depth=40)
 
     # [*] Create gif to illustrate shadows cast by buildings
     #-----> 'feature_name' (String): Feature ID to model for
@@ -729,7 +742,7 @@ def heatwave_analysis_region(shading_boolean):
                 wt_post_quantiles = weighted_median(post_medians, areas, [0.25, 0.5, 0.75])
                 print(f"For Post {month} ({period}), median ΔPT of {wt_post_quantiles[1]:.2f}. Q1 = {wt_post_quantiles[0]:.2f}, Q3 = {wt_post_quantiles[2]:.2f}")
             
-def time_series_correlation(shading_boolean, canal_id, depth, method, flux="all"):
+def time_series_correlation(shading_boolean, canal_id, depth, method, flux="all", day_filter=None):
     '''
     > Function for measuring similarity of time-series (modelled water temperature vs. measured water temperature) using measurement data from the CRT (https://canalrivertrust.org.uk/)
     > Parameters:
@@ -825,6 +838,29 @@ def time_series_correlation(shading_boolean, canal_id, depth, method, flux="all"
         except FileNotFoundError:
             print("No modelled data to compare")
             return
+    
+    # To filter to a specific day of the year
+    if day_filter:
+
+        # Init new dict
+        filtered_dict = {} 
+
+        # String to datetime to unix (int)
+        start_day = datetime.strptime(day_filter, '%Y-%m-%d')
+        end_day_unix = int((start_day + timedelta(hours = 24)).timestamp())
+        start_day_unix = int(start_day.timestamp())
+
+        # Iterate through keys 
+        for key, value in canal_output.items():
+
+            # If key within specified range
+            if start_day_unix <= int(key) <= end_day_unix: 
+
+                # Remove key-value from dict
+                filtered_dict[key] = value
+
+        # Overwrite full dict with filtered
+        canal_output = filtered_dict
 
     # Init dicts to store output values
     measured_dict_filter = {}
@@ -869,7 +905,7 @@ def time_series_correlation(shading_boolean, canal_id, depth, method, flux="all"
         print("Statistical method invalid. Check inputs")
 
     # Print summary
-    print(f"For {canal_id}, {method} correlation = {r:.2f}, p value = {p:.2f}")
+    # print(f"For {canal_id}, {method} correlation = {r:.2f}, p value = {p:.2f}")
 
     # Return method, test statistic,  p value, array length
     return method, r, p, len(measured_wt)
@@ -983,6 +1019,7 @@ def analyse_regional_variability(shading_boolean):
 
             # When the region is complete, calculate median and add to output
             output[r] = {'day median' : summary[r]['day values']['median'],
+                         'night median' : summary[r]['night values']['median'],
                         'air_temperature' : median(air_temp),
                         'humidity' : median(humidity),
                         'cloud_cover' : median(cloud_cover),
@@ -1011,20 +1048,21 @@ def simplified_wbgt(shading_boolean, region_save, humidity_range):
         - Valiantzas (2013): https://doi.org/10.1016/j.jhydrol.2013.09.005 
     
     '''
-    # Exit function if output exists
-    if isfile(f"..{PATH_MOD}/outputs/{REFERENCE_MATERIAL}/wbgt-region-values.json"):
-        print("Output file EXISTS. Exiting simplified_wbgt()...")
-        return
-    
-    # Init output dicts
-    output = {}
-    summary_dict = {}
 
     # Include or exclude shading effects, updates path to file
     if shading_boolean:
         folder_path = "including"
     else:
         folder_path = "excluding"
+
+    # Exit function if output exists
+    if isfile(f"..{PATH_MOD}/outputs/{REFERENCE_MATERIAL}/wbgt-region-values-{folder_path}-shading.json"):
+        print("Output file EXISTS. Exiting simplified_wbgt()...")
+        return
+    
+    # Init output dicts
+    output = {}
+    summary_dict = {}
 
     # Read the dataframes (Britain, Ireland) directly using pyogrio
     for f in FILE_NAMES:
@@ -1133,19 +1171,24 @@ def simplified_wbgt(shading_boolean, region_save, humidity_range):
             # Add region key to dict
             summary_dict[r] = {}
 
+
+
             # Iterate through thresholds, Table 2 in Willett and Sherwood (2011): 
             for threshold in [26, 28, 32]:
                 
                 # Count the number of 15 minute intervals that exceed the chosen thresholds, then convert to hours (/4)
                 summary_dict[r][f"wbgt >{threshold}"] = sum(1 for value in output.values() if value['wbgt'] >= threshold) / 4
                 summary_dict[r][f"mod_wbgt >{threshold}"] = sum(1 for value in output.values() if value['modified_wbgt'] >= threshold) / 4
-                summary_dict[r][f"mod_wbgt+{max(humidity_range)} >{threshold}"] = sum(1 for value in output.values() if value[f'wbgt+{max(humidity_range)}'] >= threshold) / 4
+
+                # Irerate through potential humidity values
+                for h in humidity_range:
+                    summary_dict[r][f"mod_wbgt+{h} >{threshold}"] = sum(1 for value in output.values() if value[f'wbgt+{h}'] >= threshold) / 4
                     
             # Progress statement   
-            print(f"Completed {r}")        
+            print(f"Completed {r}")      
 
     # When all regions have been completed, save output        
-    dump(summary_dict, open(f"..{PATH_MOD}/outputs/{REFERENCE_MATERIAL}/wbgt-region-values.json", 'w'))
+    dump(summary_dict, open(f"..{PATH_MOD}/outputs/{REFERENCE_MATERIAL}/wbgt-region-values-{folder_path}-shading.json", 'w'))
 
 def sensitivity_test(shading_boolean, width_modifier):
     '''
@@ -1796,7 +1839,7 @@ def draw_figure_2(canal_id, shading_boolean, month):
     #show()
     savefig(f'../images/figure-2-{REFERENCE_MATERIAL}-{canal_id}.png', bbox_inches='tight', dpi = 300)
 
-def draw_figure_3(shading_boolean, canal_list, depth):
+def draw_figure_3(shading_boolean, canal_list, depth=40, start_date=None):
     '''
     > Model validation plot, using data from the Canal and River Trust (https://canalrivertrust.org.uk/)
     > Parameters:
@@ -1807,6 +1850,7 @@ def draw_figure_3(shading_boolean, canal_list, depth):
             - 40 = 40 - 60 cm
             - 60 = 60 - 80 cm
             - 80 = 80 - 100 cm
+        - 'start_date' (String): To filter plot to a specific date of the year ("YYYY-MM-DD")
     > Of the monitoring locations, the following are suitable for comparison:
         - Bridge Pagefield Pipe Crossing (lalc_73) --------- 10 minute frequency
         - Bridge 15 Chain Lane Bridge (nabc_2) ------------- 10 minute frequency
@@ -1852,7 +1896,6 @@ def draw_figure_3(shading_boolean, canal_list, depth):
         print(f"Canal names file ../outputs/canal-id-values.json MISSING. Exiting function...")
         return
 
-
     # Update plot params
     rcParams.update({'font.size': 9,
                     "mathtext.fontset" : "dejavuserif",
@@ -1870,7 +1913,7 @@ def draw_figure_3(shading_boolean, canal_list, depth):
     for index, canal_id in enumerate(canal_list):
 
         # Run correlation, using Spearman
-        method, r, p, _ = time_series_correlation(shading_boolean, canal_id, depth, method="Spearman")
+        method, r, p, _ = time_series_correlation(shading_boolean, canal_id, depth, method="Spearman", day_filter=start_date)
 
         # Extract canal name from dict 
         full_canal_name = next(key for key, value in canal_names.items() if value == canal_id.split("_")[0]).replace('-', ' ').title().replace('And', 'and')
@@ -1886,6 +1929,16 @@ def draw_figure_3(shading_boolean, canal_list, depth):
         # Return value, corresponding to selected id
         location = location_dict[canal_id]
         
+        # Load model output record, including | excluding shading
+        try:
+            with open(f"../results/{REFERENCE_MATERIAL}/{folder_path}-shading/model-output-{canal_id}.json") as results_path:
+                canal_output = load(results_path)
+
+        # Modelled results missing
+        except FileNotFoundError:
+            print("No modelled data to compare. Exiting function...")
+            return
+        
         # Extract measured temperatures and datetimes
         measured_water = measured_values[['dt', location]]
         measured_water = measured_water.dropna()
@@ -1899,15 +1952,39 @@ def draw_figure_3(shading_boolean, canal_list, depth):
         # Measured dictionary
         measured_dict = dict(zip(dt_unix, measured_water[location]))
 
-        # Load model output record, including | excluding shading
-        try:
-            with open(f"../results/{REFERENCE_MATERIAL}/{folder_path}-shading/model-output-{canal_id}.json") as results_path:
-                canal_output = load(results_path)
+        # To filter to a specific day of the year
+        if start_date:
 
-        # Modelled results missing
-        except FileNotFoundError:
-            print("No modelled data to compare. Exiting function...")
-            return
+            # Init new dicts
+            filtered_dict = {} 
+            filtered_measured_dict = {}
+
+            # String to datetime to unix (int)
+            start_day = datetime.strptime(start_date, '%Y-%m-%d')
+            end_day_unix = int((start_day + timedelta(hours = 24)).timestamp())
+            start_day_unix = int(start_day.timestamp())
+
+            # Iterate through keys 
+            for key, value in canal_output.items():
+
+                # If key within specified range
+                if start_day_unix <= int(key) <= end_day_unix: 
+
+                    # Filter
+                    filtered_dict[key] = value
+
+            # Iterate through measured values
+            for key, value in measured_dict.items():
+
+                # If key within specified range
+                if start_day_unix <= int(key) <= end_day_unix: 
+
+                    # Filter
+                    filtered_measured_dict[key] = value
+
+            # Overwrite full dicts with filtered
+            canal_output = filtered_dict
+            measured_dict = filtered_measured_dict
 
         # Extract lists of values to plot, converting to celcius
         try:
@@ -1923,13 +2000,13 @@ def draw_figure_3(shading_boolean, canal_list, depth):
 
         # Init dictionary to store residuals
         residual_dict = {}
-
+    
         # Iterate through the modelled unix times
         for key, value in canal_output.items():
 
             # If this unix time exists in the measured dictionary
             if key in measured_dict:
-                
+
                 # Calculate the residual, converting from K to celcius
                 try: 
                     res = (value[f'depth_water_{depth}'] - 273.15) - measured_dict[key]
@@ -1951,9 +2028,14 @@ def draw_figure_3(shading_boolean, canal_list, depth):
         print(f"for {canal_id}, the absolute median residual is {median(abs_residual):.2f}, with p25 of {quantile(abs_residual, 0.25):.2f} and p75 of {quantile(abs_residual, 0.75):.2f}")
         print(f"for {canal_id}, the relative median residual is {median(residual_temp):.2f}, with p25 of {quantile(residual_temp, 0.25):.2f} and p75 of {quantile(residual_temp, 0.75):.2f}")
 
+        # Extract datetimes and values from measured dict
+        measured_unix = list(measured_dict.keys())
+        measured_datetime = [datetime.utcfromtimestamp(int(x)) for x in measured_unix]
+        measured_water_values = [x for x in measured_dict.values()]
+
         # Plot the measured-modelled temperatures
         ax1.plot(modelled_datetime, modelled_water, color = '#E28600', label = "Modelled", linewidth = 0.9)
-        ax1.plot(dt, measured_water[location], color = '#707070', label = "Measured", linewidth = 0.9)
+        ax1.plot(measured_datetime, measured_water_values, color = '#707070', label = "Measured", linewidth = 0.9)
 
         # Plot the residuals
         ax2.plot(residual_datetime, residual_temp, color = '#707070', linewidth = 0.9)
@@ -1985,6 +2067,22 @@ def draw_figure_3(shading_boolean, canal_list, depth):
         ax2.text(0.04, 0.07, f"Absolute median residual = {median(abs_residual):.2f} ({quantile(abs_residual, 0.25):.2f}, {quantile(abs_residual, 0.75):.2f})", 
                  transform = ax2.transAxes, weight='normal', fontsize = 6.5, va='bottom', ha='left', style='italic')
 
+        # Set date formatter, time of day
+        if start_date:
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H'))
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H'))
+
+            # Datetime x-label
+            x_label = start_day.date()
+        
+        # Set date formatter, year-month
+        else:
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%y-%m'))
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%y-%m'))
+
+            # String x-label
+            x_label = "Date"
+
         # Modifications based on axis index position
         if index == 0:
 
@@ -2002,22 +2100,30 @@ def draw_figure_3(shading_boolean, canal_list, depth):
             # Axis labelling
             ax1.set_ylabel("Temperature (°C)", labelpad=0)
             ax2.set_ylabel("Residual (°C)", labelpad=0)
-            ax2.set_xlabel("Date")
+            ax2.set_xlabel(x_label)
+            ax2.tick_params("x", labelsize = 7.5)
 
             # Tick params
             ax1.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelbottom=False, labelleft=True)
             ax2.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelbottom=True, labelleft=True)
+
+            # Remove final axis label for clarity
+            # setp(ax2.get_xticklabels()[-1], visible=False)
 
         elif index in [3,5]:
 
             # Axis labelling
             ax1.set_ylabel(None)
             ax2.set_ylabel(None)
-            ax2.set_xlabel("Date")
+            ax2.set_xlabel(x_label)
+            ax2.tick_params("x", labelsize = 7.5)
 
             # Tick params
             ax1.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelbottom=False, labelleft=False)
             ax2.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelbottom=True, labelleft=False)
+
+            # Remove final axis label for clarity
+            # setp(ax2.get_xticklabels()[-1], visible=False)
 
         else: 
 
@@ -2033,9 +2139,12 @@ def draw_figure_3(shading_boolean, canal_list, depth):
         # Subplot labelling
         ax1.text(0.04, 0.90, f"{axes_labels[2 * index]}", transform = ax1.transAxes, weight='bold', fontsize = 13, va='center', ha='left')
 
-    # Save to file
+    # Save to file, for full duration or date only
     # show()
-    savefig(f'../images/figure-3-{REFERENCE_MATERIAL}-{depth}-{depth+20}-cm.png', bbox_inches='tight', dpi = 300)
+    if start_date:
+        savefig(f'../images/supplementary/figure-3-{REFERENCE_MATERIAL}-{depth}-{depth+20}-cm-{start_date}.png', bbox_inches='tight', dpi = 300)
+    else: 
+        savefig(f'../images/figure-3-{REFERENCE_MATERIAL}-{depth}-{depth+20}-cm.png', bbox_inches='tight', dpi = 300)
 
 def draw_figure_4(start_date, interval, shading_boolean):
     '''
@@ -2125,7 +2234,7 @@ def draw_figure_4(start_date, interval, shading_boolean):
     ax1 = fig.add_subplot(gs[0, 2])
     ax2 = fig.add_subplot(gs[1, 2])
 
-    # Boxplots
+    # Time-series
     ax3 = fig.add_subplot(gs[0, 0:2])
     ax4 = fig.add_subplot(gs[1, 0:2])
 
@@ -2275,8 +2384,8 @@ def draw_figure_4(start_date, interval, shading_boolean):
     ax4.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelleft=True, labelbottom=True)
     
     # Remove last xtick label to simplify plot design
-    if interval == "week":
-        setp(ax4.get_xticklabels()[-1], visible=False)
+    #if interval == "week":
+    #    setp(ax4.get_xticklabels()[-1], visible=False)
 
     #show()
     savefig(f'../images/figure-4-{REFERENCE_MATERIAL}-{interval}_final.png', bbox_inches='tight', dpi = 300)
@@ -2564,11 +2673,12 @@ def draw_supplementary_figure_heatwave_trends(feature_name, heatwave):
     #show()
     savefig(f'../images/supplementary/supp-figure-heatwave-trends-{REFERENCE_MATERIAL}-{feature_name}-{heatwave.lower()}.png', bbox_inches='tight', dpi = 300)
 
-def draw_supplementary_figure_region_scatter(attributes):
+def draw_supplementary_figure_region_scatter(attributes, period):
     '''
     > Function to plot the results of analyse_regional_variability() and perform regression analysis
     > Parameters:
         - 'attributes' (List): List of attributes to plot (max. 2). Valid inputs are listed in 'attribute_labels' below
+        - 'period' (String): To plot 'day' or 'night' values
     '''
 
     # Dict to match labels to attributes
@@ -2592,22 +2702,45 @@ def draw_supplementary_figure_region_scatter(attributes):
     except FileNotFoundError:
         print(f"../outputs/region-attributes.json does not exist. Run analyse_regional_variability()")
         return 
-
+    
     # Convert to pandas dataframe for simplicity
     df = DataFrame.from_dict(region_data, orient='index')
 
     # Set global font size
     rcParams.update({'font.size': 9})
 
-    # Set up output image
-    fig, (ax1, ax2) = subplots(1, 2, figsize=(6, 4), layout='compressed')
+    # Two selected attributes 
+    if len(attributes) == 2: 
 
-    # Iterate through chosen attributes
-    for att, ax, position, orientation in zip(attributes, [ax1, ax2], [0.05, 0.95], ['left', 'right']):
+        # Set up output image
+        fig, (ax1, ax2) = subplots(1, len(attributes), figsize=(6, 4), layout='compressed')
+
+        # Zip object with the correct number of axes
+        plot_zip = zip(attributes, [ax1, ax2], [0.05, 0.95], ['left', 'right'])
+
+    # One selected attribute
+    elif len(attributes) == 1: 
+
+        # Output image and zip object
+        fig, ax1 = subplots(1, len(attributes), figsize=(4, 4), layout='compressed')
+        plot_zip = zip(attributes, [ax1], [0.05, 0.95], ['left', 'right'])
+
+    # Exit function if # objects != 1-2
+    else:
+        print("Incorrect number of attributes provided (must be one or two). Exiting draw_supplementary_figure_region_scatter()...")
+        return 
+    
+    # Iterate through zip object
+    for att, ax, position, orientation in plot_zip:
 
         # Separate features (x, 2D) and target (y)
-        x_data = array(df[[att]])         
-        y_data = df['day median']               
+        x_data = array(df[[att]])
+
+        # Return day or night data
+        if period.casefold() == 'day'.casefold():     
+            y_data = df['day median']
+        else: 
+            y_data = df['night median']        
 
         # Add constant (intercept)
         X_with_const = sm.add_constant(x_data)
@@ -2632,12 +2765,11 @@ def draw_supplementary_figure_region_scatter(attributes):
         ax.text(position, 0.95, equation_text, transform = ax.transAxes, weight='normal', fontsize = 7, va='top', ha=orientation, 
                  style='italic', color = "#727573", linespacing = 1.5)
         
-
         # Compute axis limits with 10% padding
         x_min, x_max = df[att].min(), df[att].max()
         x_range = x_max - x_min
         x_buffer = 0.1 * x_range
-        y_min, y_max = df['day median'].min(), df['day median'].max()
+        y_min, y_max = y_data.min(), y_data.max()
         y_range = y_max - y_min
         y_buffer = 0.1 * y_range
 
@@ -2648,16 +2780,19 @@ def draw_supplementary_figure_region_scatter(attributes):
         # y-axis labelling
         ax.set_xlabel(attribute_labels[att])
 
-    # Axis labels
-    ax1.text(-0.05, 1.05, f"A", transform = ax1.transAxes, weight='bold', fontsize = 12, va='top', ha='right')
-    ax2.text(-0.05, 1.05, f"B", transform = ax2.transAxes, weight='bold', fontsize = 12, va='top', ha='right')
+    # For two attributes, add axis labels
+    if len(attributes) == 2: 
+        ax1.text(-0.05, 1.05, f"A", transform = ax1.transAxes, weight='bold', fontsize = 12, va='top', ha='right')
+        ax2.text(-0.05, 1.05, f"B", transform = ax2.transAxes, weight='bold', fontsize = 12, va='top', ha='right')
 
-    # x-axis labelling
-    ax1.set_ylabel(f"Day " + "$\Delta$$\it{PT}$")
+        # Set second axis tick params
+        ax2.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelleft = False, labelbottom=True)
+
+    # x-axis labelling, using day-night variable
+    ax1.set_ylabel(f"{period.capitalize()} " + "$\Delta$$\it{PT}$")
 
     # Tick params
     ax1.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelleft = True, labelbottom=True)
-    ax2.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelleft = False, labelbottom=True)
 
     # Set aspect ratio to 1
     ratio = 1.0
@@ -2667,7 +2802,7 @@ def draw_supplementary_figure_region_scatter(attributes):
 
     # Save
     #show()
-    savefig(f'../images/supplementary/supp-figure-region-{attributes[0]}-{attributes[1]}.png', bbox_inches='tight', dpi = 300)
+    savefig(f'../images/supplementary/supp-figure-region-{period}-{"-".join(attributes)}.png', bbox_inches='tight', dpi = 300)
 
 def draw_supplementary_figure_buffer(feature_name):
     '''
@@ -3249,6 +3384,317 @@ def draw_supplementary_figure_region_hist(shading_boolean):
     # Save
     #show()
     savefig(f'../images/supplementary/supp-figure-region-hist.png', bbox_inches='tight', dpi = 300)
+
+
+def draw_supplementary_figure_wbgt(shading_boolean):
+    '''
+    > Function to visualise sensitivity of wet-bulb globe temperature to incorporating ΔPT and changing humidity
+    > Produces separate box-plots for "Moderate" (≥26°C) and “High” risk (≥28°C)
+    > Requires output of simplified_wbgt()
+    > Parameters:
+        - 'shading_boolean' (Boolean): Include (True) or exclude shading effects (False)
+    '''
+
+    # Include or exclude shading effects, updates path to file
+    if shading_boolean:
+        folder_path = "including"
+    else:
+        folder_path = "excluding"
+
+    # Try to load summary file
+    try:
+        with open(f"../outputs/{REFERENCE_MATERIAL}/wbgt-region-values-{folder_path}-shading.json") as wbgt_path:
+            wbgt_data = load(wbgt_path)
+
+    # If the file is missing, exit
+    except FileNotFoundError:
+        print(f"No summary file ../outputs/{REFERENCE_MATERIAL}/wbgt-region-values-{folder_path}-shading.json")
+        return
+
+    # If there is an error with the file, exit
+    except decoder.JSONDecodeError:
+        print(f"../outputs/{REFERENCE_MATERIAL}/wbgt-region-values-{folder_path}-shading.json")
+        return
+    
+    # Convert dict to dataframe and transpose
+    transpose_dict = DataFrame(wbgt_data).transpose()
+
+    # Filter based on heat thresholds, using copy() to avoid future SettingWithCopy warnings
+    moderate = transpose_dict.filter(regex='>26').copy()
+    high = transpose_dict.filter(regex='>28').copy() 
+    extreme = transpose_dict.filter(regex='>32').copy() 
+
+    # Remove column suffix for easier label handling
+    for df, s in zip([moderate, high, extreme], [" >26", " >28", " >32"]):
+        df.columns = df.columns.str.removesuffix(s)
+
+        # Update column names
+        df = df.rename({'wbgt': 'Baseline', 
+                    'mod_wbgt': '+ΔPT',
+                    'mod_wbgt+1': '+1%',
+                    'mod_wbgt+2': '+2%',
+                    'mod_wbgt+3': '+3%',
+                    'mod_wbgt+4': '+4%',
+                    'mod_wbgt+5': '+5%',
+                    'mod_wbgt+6': '+6%',
+                    'mod_wbgt+7': '+7%',
+                    'mod_wbgt+8': '+8%',
+                    'mod_wbgt+9': '+9%',
+                    'mod_wbgt+10': '+10%'}, axis=1,inplace=True)
+        
+    # Set up output image
+    fig = figure(layout='compressed', figsize=(10, 4))
+    gs = fig.add_gridspec(1,2)
+
+    # Histograms
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1])
+
+    # Add horizontal line denoting baseline WBGT median
+    ax1.axhline(y = quantile(moderate['Baseline'], 0.5), color = '#949494', linestyle = 'dashed', linewidth = 0.5)
+    ax2.axhline(y = quantile(high['Baseline'], 0.5), color = '#949494', linestyle = 'dashed', linewidth = 0.5)
+
+    # Boxplot for moderate and high heat, excluding 'fliers'
+    ax1.boxplot(moderate,
+                   patch_artist=True,
+                   showfliers = False,
+                   boxprops={'facecolor' : '#FFB16F', 'linewidth' : 0.8},
+                   medianprops = {'color': "#232323", 'linewidth' : 1.2},
+                   whiskerprops = {'linewidth': 0.8},
+                   capprops = {'linewidth': 0.8})
+    ax2.boxplot(high,
+                   patch_artist=True,
+                   showfliers = False,
+                    boxprops={'facecolor' : '#B9B9B9', 'linewidth' : 0.8},
+                   medianprops = {'color': "#232323", 'linewidth' : 1.2},
+                   whiskerprops = {'linewidth': 0.8},
+                   capprops = {'linewidth': 0.8})
+    
+    # Axis ticks
+    ax1.set_xticklabels(moderate.columns, rotation=45, ha='right')
+    ax2.set_xticklabels(high.columns, rotation=45, ha='right')
+
+    # Labelling
+    ax1.set_ylabel("Hours of modelled heat risk")
+    ax1.set_xlabel("Humidity change", loc='right', labelpad = -3)
+    ax2.set_xlabel("Humidity change", loc='right', labelpad = -3)
+
+    # Manual axis limits
+    ax1.set_ylim(-10, 170)
+    ax2.set_ylim(-10, 170)
+
+    # Tick params
+    ax1.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelleft = True, labelbottom=True)
+    ax2.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelleft = False, labelbottom=True)
+
+    # Add text annotations
+    ax1.text(-0.03, 1.08, f"A", transform = ax1.transAxes, weight='bold', fontsize = 15, va='top', ha='right')
+    ax2.text(-0.03, 1.08, f"B", transform = ax2.transAxes, weight='bold', fontsize = 15, va='top', ha='right')
+
+    # Plot labels
+    ax1.text(0.03, 0.95, "Moderate risk (>26°C)", transform = ax1.transAxes, fontsize = 10, va='top', ha='left', linespacing = 1.5)
+    ax2.text(0.03, 0.95, "High risk (>28°C)", transform = ax2.transAxes, fontsize = 10, va='top', ha='left', linespacing = 1.5)
+
+    # Save
+    #show()
+    savefig(f'../images/supplementary/supp-figure-wbgt-sensitivity.png', bbox_inches='tight', dpi = 300)
+
+def draw_supplementary_figure_hourly_model_performance(shading_boolean, canal_list, depth=40):
+    '''
+    > Function to illustrate variability in hourly model performance
+    > Parameters:
+        - 'shading_boolean' (Boolean): Include (True) or exclude shading effects (False)
+        - 'canal_list' (List): List of canal IDs
+        - 'depth' (Numeric): Water depth (cm)
+    '''
+
+    # Dictionary of CRT wT monitoring locations and corresponding canal ids
+    location_dict = {'tamc_19' : 'Anderton Waste Weir Flow Water Temperature C (All Data) (Value)', 
+                     'lalc_73' : 'Bridge Pagefield Pipe Crossing Mean Temperature C (All Data) (Value)',
+                     'nabc_2' : 'Bridge 15 Chain Lane Bridge Mean Temperature C (All Data) (Value)',
+                     'suc_41' : 'New Road Bridge 148 Mean Temperature C (All Data) (Value)',
+                     'rc_103' : 'Bridge 46 Benthouse Bridge Mean Temperature C (All Data) (Value)',
+                     'cc3_60' : 'Hawkesbury Lock Mean Temperature C (All Data) (Value)',
+                     'batc_14' : 'Bridge 32. Priorswood Mean Temperature C (All Data) (Value)', 
+                     'hc_53' : 'Bridge 4 Wakefield Road Bridge Mean Temperature C (All Data) (Value)',
+                     'lalc_4' : 'Bridge C Lightbody Street Mean Temperature C (All Data) (Value)',
+                     'cc3_11' : 'Bridge 73 Anchor Bridge Mean Temperature C (All Data) (Value)',
+                     'cc3_53' : 'Bridge 40 Taverners Bridge Mean Temperature C (All Data) (Value)'}
+    
+    # Include or exclude shading effects, updates path to file
+    if shading_boolean:
+        folder_path = "including"
+    else:
+        folder_path = "excluding"
+
+    # Open csv
+    measured_values = read_csv("../data/model_validation.csv")
+
+    # Open file containing canal names
+    try: 
+        with open(f"../outputs/canal-id-values.json") as file_path:
+            canal_names = load(file_path)
+    except FileNotFoundError:
+        print(f"Canal names file ../outputs/canal-id-values.json MISSING. Exiting function...")
+        return
+    
+    # Set up output image
+    fig = figure(layout='compressed', figsize=(8, 5))
+    gs = fig.add_gridspec(2,3, height_ratios=[2,2])
+
+    # List of axis locations
+    axes_loc = [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2]]
+    axes_labels = ['A', 'B', 'C', 'D', 'E', 'F']
+
+    # Iterate through monitoring locations
+    for index, canal_id in enumerate(canal_list):
+
+        # Extract canal name from dict 
+        full_canal_name = next(key for key, value in canal_names.items() if value == canal_id.split("_")[0]).replace('-', ' ').title().replace('And', 'and')
+
+        # Return plot locations
+        first_plot = axes_loc[index]
+
+        # Add axes
+        ax1 = fig.add_subplot(gs[first_plot[0], first_plot[1]])
+        
+        # Return value, corresponding to selected id
+        location = location_dict[canal_id]
+        
+        # Load model output record, including | excluding shading
+        try:
+            with open(f"../results/{REFERENCE_MATERIAL}/{folder_path}-shading/model-output-{canal_id}.json") as results_path:
+                canal_output = load(results_path)
+
+        # Modelled results missing
+        except FileNotFoundError:
+            print("No modelled data to compare. Exiting function...")
+            return
+        
+        # Extract measured temperatures and datetimes
+        measured_water = measured_values[['dt', location]]
+        measured_water = measured_water.dropna()
+
+        # Convert from string to datetime
+        dt = [datetime.strptime(x, '%d/%m/%Y %H:%M') for x in measured_water['dt']]
+
+        # Convert to unix 
+        dt_unix = [str(int(x.timestamp())) for x in dt]
+
+        # Measured dictionary
+        measured_dict = dict(zip(dt_unix, measured_water[location]))
+
+        # Init dictionary to store residuals
+        residual_dict = {}
+    
+        # Iterate through the modelled unix times
+        for key, value in canal_output.items():
+
+            # If this unix time exists in the measured dictionary
+            if key in measured_dict:
+
+                # Calculate the residual, converting from K to celcius
+                try: 
+                    res = (value[f'depth_water_{depth}'] - 273.15) - measured_dict[key]
+
+                # EAFP: surface layer
+                except KeyError:
+                    res = (value[f'surface_water_k'] - 273.15) - measured_dict[key]
+
+                # Add to residual dictionary
+                residual_dict[key] = res
+
+        # List of hours of day (str)
+        times = [f"{hour:02d}:00:00" for hour in range(24)]
+
+        # Create dict, containnig times and empty lists
+        time_dict = {k: [] for k in times}
+
+        # Iterate 
+        for key, value in residual_dict.items():
+            
+            # Append absolute residual to corresponding key
+            try: 
+                time_dict[str(datetime.fromtimestamp(int(key)).time())].append(abs(value))
+
+            # If key missing e.g., measurements in between hours
+            except KeyError:
+                continue
+
+        # Extract values and labels
+        data = list(time_dict.values())
+        labels = [x[:2] for x in list(time_dict.keys())]
+
+        # Add boxplot
+        ax1.boxplot(data, tick_labels=labels, widths = 1,
+                patch_artist=True,
+                showfliers = False,
+                whis=0,
+                boxprops={'facecolor' : '#C2C2C2', 'linewidth' : 0.3, 'edgecolor' : "#ABABAB"},
+                medianprops = {'color': "#232323"},
+                capprops = {'linewidth': 0})
+
+
+        # Manual axis limits
+        ax1.set_ylim([0, 3.5])
+
+        # Add location and count
+        ax1.text(0.95, 0.90, f"{full_canal_name}", transform = ax1.transAxes, weight='normal', fontsize = 8, va='center', ha='right', 
+                 style='italic', color = "#727573", linespacing = 1.5)
+
+        # Modifications based on axis index position
+        if index == 0:
+
+            # Axis labelling
+            ax1.set_ylabel("Absolute residuals (°C)", labelpad=3)
+            ax1.set_xlabel(None)
+
+            # Tick params
+            ax1.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelbottom=False, labelleft=True)
+
+        elif index == 1:
+
+            # Axis labelling
+            ax1.set_ylabel("Absolute residuals (°C)", labelpad=3)
+            ax1.set_xlabel("Hour of day")
+            ax1.tick_params("x", labelsize = 7.5, rotation = 270)
+
+            # Tick params
+            ax1.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelbottom=True, labelleft=True)
+
+            # Hide every nth tick
+            for label in ax1.xaxis.get_ticklabels()[1::2]:
+                label.set_visible(False)
+
+        elif index in [3,5]:
+
+            # Axis labelling
+            ax1.set_ylabel(None)
+            ax1.set_xlabel("Hour of day")
+            ax1.tick_params("x", labelsize = 7.5, rotation = 270)
+
+            # Tick params
+            ax1.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelbottom=True, labelleft=False)
+
+            # Hide every nth tick
+            for label in ax1.xaxis.get_ticklabels()[1::2]:
+                label.set_visible(False)
+
+        else: 
+
+            # Axis labelling
+            ax1.set_ylabel(None)
+            ax1.set_xlabel(None)
+
+            # Tick params       
+            ax1.tick_params(bottom=True, top=True, left=True, right=True, direction="in", labelbottom=False, labelleft=False)
+
+        # Subplot labelling
+        ax1.text(0.04, 0.90, f"{axes_labels[index]}", transform = ax1.transAxes, weight='bold', fontsize = 13, va='center', ha='left')
+
+    # Save
+    # show()
+    savefig(f'../images/supplementary/supp-figure-hourly-model-performance.png', bbox_inches='tight', dpi = 300)
 
 def shading_gif(feature_name, start_date, days, delete, frames=10, loops=10):
     '''

@@ -1,5 +1,5 @@
 # The cooling power of urban waterways
-A University of Manchester project for modelling the cooling effect of urban canals across Great Britain and Ireland..
+A University of Manchester project for modelling the cooling effect of urban canals across Great Britain and Ireland.
 Project funded by the [Canal and River Trust](https://canalrivertrust.org.uk/).
 
 This project expands upon on an earlier local-scale project, which can be found [here](https://github.com/jonnyhuck/canal-cooling).
@@ -15,7 +15,7 @@ This repository contains the following directories:
     - `params` which contains key parameters, including designation and selection of the reference material, and which is also called by `national_canal_cooling`.
     - `analysis` for generating results and plots. 
     - `shading` which is not called directly, but is used to generate the shading proportion of each canal section, adapted from [pybdshadow](https://pybdshadow.readthedocs.io/en/latest/index.html).
-- `/images` which contains the manuscript and supplementary figures.
+- `/images` which contains the figures produced for the main text and supplementary information.
 - `/outputs` which contains key outputs from `analysis.py`.
 - `/tables` which contains Table 1 (*Summary ΔPT values*) and Supplementary Table 1 (*Water temperature data from the Canal and River Trust*)
 - `/test` which contains test data and outputs.
