@@ -133,7 +133,7 @@ def main():
     #-----> 'canal_list' (List): List of canal IDs
     #-----> 'depth' (Numeric): Water depth (cm)
     #-----> 'start_date' (String): To filter plot to a specific date of the year ("YYYY-MM-DD") e.g., "2022-06-01" or None
-    #draw_figure_3(True, ['lalc_73', 'nabc_2', 'suc_41', 'batc_14', 'hc_53', 'cc3_11'], depth=40, start_date=None) 
+    draw_figure_3(True, ['lalc_73', 'nabc_2', 'suc_41', 'batc_14', 'hc_53', 'cc3_11'], depth=40, start_date=None) 
 
     # Figure 4: Fluctuations in median air temperature change at desired interval, plus histogram
     #-----> 'start_date' (String): Start date for plotting ("2022-01-01 10:00:00")
@@ -891,6 +891,9 @@ def time_series_correlation(shading_boolean, canal_id, depth, method, flux="all"
     measured_diff = ediff1d(measured_wt)
     modelled_diff = ediff1d(modelled_wt)
 
+    # Array lengths for calculation
+    #print(f"Length of measured = {len(measured_diff)}, length of modelled = {len(modelled_diff)}")
+
     # Method selection
     if method == "Spearman":
         r, p = stats.spearmanr(measured_diff, modelled_diff)
@@ -1487,7 +1490,8 @@ def draw_figure_1():
     # Update plot params
     rcParams.update({'font.size': 9,
                      "mathtext.fontset" : "dejavuserif",
-                     'mathtext.default' : 'regular'})
+                     'mathtext.default' : 'regular',
+                     'font.family' : 'sans-serif'})
 
     # Set up output image
     fig = figure(layout='compressed', figsize=(7, 5))
@@ -1592,19 +1596,26 @@ def draw_figure_1():
     # Tick params
     ax1.tick_params(axis='x', labelsize=8.5)
     ax1.tick_params(axis='y', labelsize=8.5)
-    ax1.tick_params(bottom=False, top=False, left=False, right=False, direction="in")
+    ax1.tick_params(bottom=True, top=True, left=True, right=True, direction="in")
 
     # Remove axis labels
-    ax1.xaxis.label.set_visible(False)
-    ax1.yaxis.label.set_visible(False)
+    #ax1.xaxis.label.set_visible(False)
+    #ax1.yaxis.label.set_visible(False)
 
     # Turn off tick labels
-    ax1.set_yticklabels([])
-    ax1.set_xticklabels([])
+    #ax1.set_yticklabels([])
+    #ax1.set_xticklabels([])
+
+    # Axis labels (added post-review)
+    ax1.set_xlabel("Easting", fontsize = 9)
+    ax1.set_ylabel("Northing", fontsize = 9)
+    ax1.yaxis.offsetText.set_fontsize(7)
+    ax1.xaxis.offsetText.set_fontsize(0)
+    ax1.ticklabel_format(axis='both', style='sci', scilimits=(0,0))
 
     # Add text annotations
-    ax1.text(-0.05, 1.05, f"B", transform = ax1.transAxes, weight='bold', fontsize = 13, va='top', ha='right')
-    ax2.text(-0.05, 1.1, f"A", transform = ax2.transAxes, weight='bold', fontsize = 13, va='top', ha='right')
+    ax1.text(-0.05, 1.05, f"b", transform = ax1.transAxes, weight='bold', fontsize = 13, va='top', ha='right')
+    ax2.text(-0.05, 1.1, f"a", transform = ax2.transAxes, weight='bold', fontsize = 13, va='top', ha='right')
 
     # Iterate through the n largest areas
     for geom, label, x_offset, y_offset in zip(
@@ -1697,9 +1708,13 @@ def draw_figure_2(canal_id, shading_boolean, month):
     filter_datetime = [dt_datetime[i] for i in idx]
     filter_water = [water_temps[i] for i in idx]
     filter_reference = [reference_temps[i] for i in idx] 
+    
+    # To decrease size of svg export, filter to region of interest
+    canals_gdf = canals_gdf.loc[canals_gdf['region'].isin(filtered_canals.region)]
 
     # Set global font size
-    rcParams.update({'font.size': 9})
+    rcParams.update({'font.size': 9,
+                     'font.family': 'sans-serif'})
 
     # Set up output image
     fig = figure(layout='compressed', figsize=(7, 5))
@@ -1728,6 +1743,7 @@ def draw_figure_2(canal_id, shading_boolean, month):
                             (patch_max + temp_buffer) - (patch_min - temp_buffer),
                             fill = False, color=None, # alpha=0.5,
                             edgecolor="#4D4D4D", lw = 1, zorder=2, linestyle = '--'))
+    
 
     # Plot the buffer area, used for air temperature modelling
     buffered_canal.plot(
@@ -1737,7 +1753,7 @@ def draw_figure_2(canal_id, shading_boolean, month):
         linewidth = 1,
         linestyle = 'dashed', 
         )
-
+    
     # Plot the building geometries
     buildings.plot(
         ax = ax2,
@@ -1745,7 +1761,7 @@ def draw_figure_2(canal_id, shading_boolean, month):
         edgecolor = '#343434',
         linewidth = 0,
         )
-            
+     
     # Plot other canal geometries
     canals_gdf.plot(
         ax = ax2,
@@ -1770,17 +1786,17 @@ def draw_figure_2(canal_id, shading_boolean, month):
     
     # Top legend
     ax2_legend_top = ax2.legend(handles=[canal_polygon, building_polygon], loc = 'upper left',ncol=2)
-    ax2_legend_top.get_frame().set_linewidth(0.0)
+    ax2_legend_top.get_frame().set_linewidth(0.5)
     ax2.add_artist(ax2_legend_top)
 
     # Bottom legend
     ax2_legend_bottom = ax2.legend(handles=[buffer_polygon], loc = 'lower right',ncol=1)
-    ax2_legend_bottom.get_frame().set_linewidth(0.0)
+    ax2_legend_bottom.get_frame().set_linewidth(0.5)
     ax2.add_artist(ax2_legend_bottom)
 
     # Scale bar
     ax2.add_artist(ScaleBar(dx=1, units="m", location="lower left", length_fraction=0.2, font_properties={"size": 8},
-                            label_loc = "top", box_alpha = 0.9, color = None, frameon = True,
+                            label_loc = "top", box_alpha = 0.9, color = "#333333", frameon = True,
                             scale_loc="top", sep = 2, border_pad = 0.4))
     
     # Extracts bounds of canal feature
@@ -1798,22 +1814,22 @@ def draw_figure_2(canal_id, shading_boolean, month):
     ax2.set_xlim([filtered_canals.geometry.iloc[0].bounds[0] - x_buffer, filtered_canals.geometry.iloc[0].bounds[2] + x_buffer])
     ax2.set_ylim([filtered_canals.geometry.iloc[0].bounds[1] - y_buffer, filtered_canals.geometry.iloc[0].bounds[3] + y_buffer])
    
-    # Remove axis labels
-    ax2.xaxis.label.set_visible(False)
-    ax2.yaxis.label.set_visible(False)
-
-    # Turn off tick labels
-    ax2.set_yticklabels([])
-    ax2.set_xticklabels([])
-
     # Remove ticks
-    ax2.tick_params(bottom=False, top=False, left=False, right=False)
+    ax2.tick_params(bottom=True, top=True, left=True, right=True, direction="in")
 
     # Add north arrow
     x, y, arrow_length = 0.06, 0.52, 0.21
     ax2.annotate('N', xy=(x, y), xytext=(x, y-arrow_length),
 	arrowprops=dict(facecolor='black', width=2, headwidth=8),
 	ha='center', va='bottom', fontsize=12, xycoords=ax2.transAxes)
+
+    # Axis labels [added post-review]
+    ax2.set_xlabel("Easting", fontsize = 9)
+    ax2.set_ylabel("Northing", fontsize = 9)
+
+    ax2.yaxis.offsetText.set_fontsize(7)
+    ax2.xaxis.offsetText.set_fontsize(0)
+    ax2.ticklabel_format(axis='both', style='sci', scilimits=(0,0))
         
     # Plot the monthly water and reference temperature record
     ax3.plot(filter_datetime, filter_reference, color = "#FFAD28", label = "Reference (°C)")
@@ -1828,12 +1844,12 @@ def draw_figure_2(canal_id, shading_boolean, month):
 
     # Add plot annotations
     ax3.text(0.04, 0.89, f"{months[month-1]} 2022", transform = ax3.transAxes)
-    ax1.text(-0.02, 1.08, f"A", transform = ax1.transAxes, weight='bold', fontsize = 13, va='top', ha='right')
-    ax2.text(-0.05, 1.05, f"B", transform = ax2.transAxes, weight='bold', fontsize = 13, va='top', ha='right')
-    ax3.text(-0.09, 1.05, f"C", transform = ax3.transAxes, weight='bold', fontsize = 13, va='top', ha='right')
+    ax1.text(-0.02, 1.08, f"a", transform = ax1.transAxes, weight='bold', fontsize = 13, va='top', ha='right')
+    ax2.text(-0.05, 1.05, f"b", transform = ax2.transAxes, weight='bold', fontsize = 13, va='top', ha='right')
+    ax3.text(-0.09, 1.05, f"c", transform = ax3.transAxes, weight='bold', fontsize = 13, va='top', ha='right')
     
     # Overview label
-    ax1.text(filter_datetime[0]+timedelta(days = -3), patch_max + temp_buffer, f"C", weight='bold', fontsize = 9, va='top', ha='right')
+    ax1.text(filter_datetime[0]+timedelta(days = -3), patch_max + temp_buffer, f"c", weight='bold', fontsize = 9, va='top', ha='right')
 
     # Save to file
     #show()
@@ -1899,7 +1915,8 @@ def draw_figure_3(shading_boolean, canal_list, depth=40, start_date=None):
     # Update plot params
     rcParams.update({'font.size': 9,
                     "mathtext.fontset" : "dejavuserif",
-                    'mathtext.default' : 'regular'})
+                    'mathtext.default' : 'regular',
+                    'font.family' : 'sans-serif'})
     
     # Set up output image
     fig = figure(layout='compressed', figsize=(8, 6))
@@ -1907,14 +1924,14 @@ def draw_figure_3(shading_boolean, canal_list, depth=40, start_date=None):
 
     # List of axis locations
     axes_loc = [[0, 0], [1, 0], [2, 0], [3, 0], [0, 1], [1, 1], [2, 1], [3, 1], [0, 2], [1, 2], [2, 2], [3, 2]]
-    axes_labels = ['A', None,'D', None,'B', None,'E', None,'C', None,'F', None]
+    axes_labels = ['a', None,'d', None,'b', None,'e', None,'c', None,'f', None]
 
     # Iterate through monitoring locations
     for index, canal_id in enumerate(canal_list):
 
         # Run correlation, using Spearman
         method, r, p, _ = time_series_correlation(shading_boolean, canal_id, depth, method="Spearman", day_filter=start_date)
-
+        
         # Extract canal name from dict 
         full_canal_name = next(key for key, value in canal_names.items() if value == canal_id.split("_")[0]).replace('-', ' ').title().replace('And', 'and')
         
@@ -2053,11 +2070,11 @@ def draw_figure_3(shading_boolean, canal_list, depth=40, start_date=None):
             p = "< 0.01"
 
             # Add correlation statistics
-            ax1.text(0.04, 0.05, f"{method} $r_s$ = {r:.2f}\np value = {p}", transform = ax1.transAxes, weight='normal', fontsize = 6.5, va='bottom', ha='left', style='italic')
+            ax1.text(0.04, 0.05, f"{method} $r_s$ = {r:.2f}\np value = {p}", transform = ax1.transAxes, weight='normal', fontsize = 6.5, va='bottom', ha='left', style='italic', fontfamily='serif')
         
-        # Two significant figures
+        # p-value to two significant figures
         else:
-            ax1.text(0.04, 0.05, f"{method} $r_s$ = {r:.2f}\np value = {p:.2f}", transform = ax1.transAxes, weight='normal', fontsize = 6.5, va='bottom', ha='left', style='italic')
+            ax1.text(0.04, 0.05, f"{method} $r_s$ = {r:.2f}\np value = {p}", transform = ax1.transAxes, weight='normal', fontsize = 6.5, va='bottom', ha='left', style='italic', fontfamily='serif')
 
         # Add location and count
         ax1.text(0.95, 0.95, f"{full_canal_name}", transform = ax1.transAxes, weight='normal', fontsize = 6, va='top', ha='right', 
@@ -2065,7 +2082,7 @@ def draw_figure_3(shading_boolean, canal_list, depth=40, start_date=None):
         
         # Add absolute residuals
         ax2.text(0.04, 0.07, f"Absolute median residual = {median(abs_residual):.2f} ({quantile(abs_residual, 0.25):.2f}, {quantile(abs_residual, 0.75):.2f})", 
-                 transform = ax2.transAxes, weight='normal', fontsize = 6.5, va='bottom', ha='left', style='italic')
+                 transform = ax2.transAxes, weight='normal', fontsize = 6.5, va='bottom', ha='left', style='italic', fontfamily='serif')
 
         # Set date formatter, time of day
         if start_date:
@@ -2142,7 +2159,7 @@ def draw_figure_3(shading_boolean, canal_list, depth=40, start_date=None):
     # Save to file, for full duration or date only
     # show()
     if start_date:
-        savefig(f'../images/supplementary/figure-3-{REFERENCE_MATERIAL}-{depth}-{depth+20}-cm-{start_date}.png', bbox_inches='tight', dpi = 300)
+        savefig(f'../images/supplementary/figure-3-{REFERENCE_MATERIAL}-{depth}-{depth+20}-cm-{start_date}.svg', bbox_inches='tight', dpi = 300)
     else: 
         savefig(f'../images/figure-3-{REFERENCE_MATERIAL}-{depth}-{depth+20}-cm.png', bbox_inches='tight', dpi = 300)
 
@@ -2225,6 +2242,7 @@ def draw_figure_4(start_date, interval, shading_boolean):
     # Set global font size
     rcParams.update({'font.size': 9})
     rcParams.update({"mathtext.fontset" : "dejavuserif"})
+    rcParams.update({"font.family" : "sans-serif"})
 
     # Set up output image
     fig = figure(layout='compressed', figsize=(6, 4))
@@ -2241,7 +2259,7 @@ def draw_figure_4(start_date, interval, shading_boolean):
     # Iterate through inputs (axes, data, labels, colours)
     for right_ax, left_ax, ax_label, data, flat, label, fill, edge, time_colour in zip(
                                 [ax1, ax2], [ax3, ax4], #----------------------------------------------------------------- Matplotlib axes
-                                [["B", "A"], ["D", "C"]], #--------------------------------------------------------------- Subplot labels
+                                [["b", "a"], ["d", "c"]], #--------------------------------------------------------------- Subplot labels
                                 [day_medians, night_medians], #----------------------------------------------------------- Data by aggregation period
                                 [flat_day, flat_night], #----------------------------------------------------------------- Flattened data
                                 ['Day', 'Night'], #----------------------------------------------------------------------- Labels
