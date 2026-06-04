@@ -13,7 +13,6 @@ import imageio
 from scipy import stats
 from copy import deepcopy
 from glob import glob as g
-from pandas import read_csv, DataFrame
 from pywaffle import Waffle
 import statsmodels.api as sm
 from os.path import basename
@@ -26,6 +25,7 @@ import matplotlib.dates as mdates
 from pyogrio import read_dataframe
 from collections import defaultdict
 import matplotlib.patches as mpatches
+from pandas import read_csv, DataFrame
 from timeit import default_timer as timer
 from dateutil.relativedelta import relativedelta
 from matplotlib_scalebar.scalebar import ScaleBar
@@ -133,7 +133,7 @@ def main():
     #-----> 'canal_list' (List): List of canal IDs
     #-----> 'depth' (Numeric): Water depth (cm)
     #-----> 'start_date' (String): To filter plot to a specific date of the year ("YYYY-MM-DD") e.g., "2022-06-01" or None
-    draw_figure_3(True, ['lalc_73', 'nabc_2', 'suc_41', 'batc_14', 'hc_53', 'cc3_11'], depth=40, start_date=None) 
+    #draw_figure_3(True, ['lalc_73', 'nabc_2', 'suc_41', 'batc_14', 'hc_53', 'cc3_11'], depth=40, start_date=None) 
 
     # Figure 4: Fluctuations in median air temperature change at desired interval, plus histogram
     #-----> 'start_date' (String): Start date for plotting ("2022-01-01 10:00:00")
@@ -154,7 +154,7 @@ def main():
 
     # [*] Plot to showcase buffer areas for the chosen feature
     #-----> 'feature_name' (String): Canal ID to plot
-    #draw_supplementary_figure_buffer('nmlb_38') 
+    draw_supplementary_figure_buffer('nmlb_38') 
 
     # [*] Plot of cooling distances vs. bluespace geometries
     #draw_supplementary_figure_cooling_distance() 
@@ -2406,7 +2406,7 @@ def draw_figure_4(start_date, interval, shading_boolean):
     #    setp(ax4.get_xticklabels()[-1], visible=False)
 
     #show()
-    savefig(f'../images/figure-4-{REFERENCE_MATERIAL}-{interval}_final.png', bbox_inches='tight', dpi = 300)
+    savefig(f'../images/figure-4-{REFERENCE_MATERIAL}-{interval}_final.pdf', bbox_inches='tight', dpi = 300)
 
 #==================== Supplementary ====================#
 
@@ -2918,16 +2918,15 @@ def draw_supplementary_figure_buffer(feature_name):
     ax1.set_xlim([filtered_canals.geometry.iloc[0].bounds[0] - x_buffer, filtered_canals.geometry.iloc[0].bounds[2] + x_buffer])
     ax1.set_ylim([filtered_canals.geometry.iloc[0].bounds[1] - y_buffer, filtered_canals.geometry.iloc[0].bounds[3] + y_buffer])
    
-    # Remove axis labels
-    ax1.xaxis.label.set_visible(False)
-    ax1.yaxis.label.set_visible(False)
+    # Add ticks
+    ax1.tick_params(bottom=True, top=True, left=True, right=True, direction="in")
 
-    # Turn off tick labels
-    ax1.set_yticklabels([])
-    ax1.set_xticklabels([])
-
-    # Remove ticks
-    ax1.tick_params(bottom=False, top=False, left=False, right=False)
+    # Axis labels [added post-review]
+    ax1.set_xlabel("Easting", fontsize = 9)
+    ax1.set_ylabel("Northing", fontsize = 9)
+    ax1.yaxis.offsetText.set_fontsize(7)
+    ax1.xaxis.offsetText.set_fontsize(0)
+    ax1.ticklabel_format(axis='both', style='sci', scilimits=(0,0))
 
     # Add north arrow
     x, y, arrow_length = 0.04, 0.70, 0.1
