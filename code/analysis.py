@@ -126,7 +126,7 @@ def main():
     #-----> 'canal_id' (String): Feature name to plot e.g., 'rc2_23'
     #-----> 'shading_boolean' (Boolean): Include (True) or exclude shading effects (False)
     #-----> 'month' (Numeric): Month to highlight [1-12]
-    #draw_figure_2("rc2_23", True, 7) 
+    draw_figure_2("rc2_23", True, 7) 
 
     # Figure 3: Plot measured vs. modelled water temperatures
     #-----> 'shading_boolean' (Boolean): Include (True) or exclude shading effects (False)
@@ -154,7 +154,7 @@ def main():
 
     # [*] Plot to showcase buffer areas for the chosen feature
     #-----> 'feature_name' (String): Canal ID to plot
-    draw_supplementary_figure_buffer('nmlb_38') 
+    #draw_supplementary_figure_buffer('nmlb_38') 
 
     # [*] Plot of cooling distances vs. bluespace geometries
     #draw_supplementary_figure_cooling_distance() 
@@ -1627,18 +1627,18 @@ def draw_figure_1():
         # Add labels to map (+ xy offsets)
         ax1.text(geom.x + x_offset, geom.y + y_offset, label, fontsize = 7, va='center', ha='center')
 
-    # Scale bar
-    ax1.add_artist(ScaleBar(dx=1, units="m", location="upper right", length_fraction=0.2, font_properties={"size": 8}))
+    # Scale bar, padding and color for export
+    ax1.add_artist(ScaleBar(dx=1, units="m", location="upper right", length_fraction=0.2, font_properties={"size": 8}, box_color='none', pad = 0.7))
 
     # North arrow
-    x, y, arrow_length = 0.05, 0.99, 0.11
+    x, y, arrow_length = 0.06, 0.98, 0.11
     ax1.annotate('N', xy=(x, y), xytext=(x, y-arrow_length),
 	arrowprops=dict(facecolor='black', width=2, headwidth=8),
 	ha='center', va='center', fontsize=12, xycoords=ax1.transAxes)
 
     # Save to file
     #show()
-    savefig(f'../images/figure-1.png', bbox_inches='tight', dpi = 300)
+    savefig(f'../images/figure-1.pdf', bbox_inches='tight', dpi = 300)
 
 def draw_figure_2(canal_id, shading_boolean, month):
     '''
@@ -1818,7 +1818,7 @@ def draw_figure_2(canal_id, shading_boolean, month):
     ax2.tick_params(bottom=True, top=True, left=True, right=True, direction="in")
 
     # Add north arrow
-    x, y, arrow_length = 0.06, 0.52, 0.21
+    x, y, arrow_length = 0.18, 0.38, 0.21
     ax2.annotate('N', xy=(x, y), xytext=(x, y-arrow_length),
 	arrowprops=dict(facecolor='black', width=2, headwidth=8),
 	ha='center', va='bottom', fontsize=12, xycoords=ax2.transAxes)
